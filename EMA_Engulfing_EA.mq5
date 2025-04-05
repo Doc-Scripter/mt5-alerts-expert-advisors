@@ -17,7 +17,7 @@ input double      Lot_Size_1 = 0.01;     // First entry lot size
 input double      Lot_Size_2 = 0.02;     // Second entry lot size
 input double      RR_Ratio_1 = 1.7;      // Risk:Reward ratio for first target
 input double      RR_Ratio_2 = 2.0;      // Risk:Reward ratio for second target
-input int         Max_Spread = 20;       // Maximum allowed spread in points
+input int         Max_Spread = 180;      // Maximum spread for logging purposes only
 input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strategy
 input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
@@ -48,6 +48,10 @@ int OnInit()
    
    // Initialize barCount to track new bars
    barCount = Bars(_Symbol, PERIOD_CURRENT);
+   
+   // Display information about the current symbol
+   Print("Symbol: ", _Symbol, ", Digits: ", _Digits, ", Point: ", _Point);
+   Print("SPREAD LIMITING REMOVED: EA will trade regardless of spread conditions");
    
    return(INIT_SUCCEEDED);
 }
@@ -82,12 +86,8 @@ void OnTick()
    if(HasOpenPositions())
       return;
       
-   // Check if spread is too high using the improved spread check function
-   if(!IsSpreadAcceptable(Max_Spread))
-   {
-      Comment("Trading paused: Spread too high");
-      return;
-   }
+   // Log current spread for reference (but don't use it to limit trading)
+   IsSpreadAcceptable(Max_Spread);
    
    // Reset comment
    Comment("");
@@ -453,7 +453,7 @@ bool CheckStrategy3()
 //+------------------------------------------------------------------+
 void ExecuteTrade(bool isBuy, double targetLevel)
 {
-   // Log current spread at time of trade execution
+   // Log current spread at time of trade execution (for information only)
    LogCurrentSpread();
    
    double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);

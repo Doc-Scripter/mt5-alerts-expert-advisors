@@ -1,121 +1,64 @@
 //+------------------------------------------------------------------+
 //|                                                  SpreadCheck.mqh |
-//|                        Copyright 2024, Your Name                 |
-//|                                             https://www.yoursite.com |
+//|                        Copyright 2023                            |
+//|                                                                  |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2024, Your Name"
-#property link      "https://www.yoursite.com"
+#property copyright "Copyright 2023"
+#property link      ""
 #property version   "1.00"
 
-// Enumeration for spread handling options
+// Define enums here to avoid errors
 enum ENUM_SPREAD_ACTION {
-   SPREAD_ACTION_SKIP_TRADE,    // Skip trading when spread is high
-   SPREAD_ACTION_ADJUST_TP_SL,  // Adjust TP/SL when spread is high
+   SPREAD_ACTION_SKIP_TRADE,    // Skip trading when spread is high (not used)
+   SPREAD_ACTION_ADJUST_TP_SL,  // Adjust TP/SL when spread is high (not used)
    SPREAD_ACTION_IGNORE         // Ignore high spread and trade anyway
 };
 
 //+------------------------------------------------------------------+
-//| Check if current spread is acceptable for trading                |
+//| Always returns true but logs current spread for reference        |
 //+------------------------------------------------------------------+
-bool IsSpreadAcceptable(int maxAllowedSpread)
+bool IsSpreadAcceptable(int maxAllowedSpread, ENUM_SPREAD_ACTION action=SPREAD_ACTION_IGNORE)
 {
+   // Get current spread for logging purposes only
    int currentSpread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    
+   // Log high spread but always allow trading
    if(currentSpread > maxAllowedSpread)
    {
-      string message = "Spread too high: " + IntegerToString(currentSpread);
+      string message = "Note: Spread is " + IntegerToString(currentSpread) + 
+                      " (above threshold of " + IntegerToString(maxAllowedSpread) + 
+                      ") but trading is allowed";
       Print(message);
-      Comment(message);
-      return false;
    }
    
+   // Always return true (allow trading regardless of spread)
    return true;
 }
 
 //+------------------------------------------------------------------+
-//| Log spread value to journal for monitoring                       |
+//| Log spread value without limiting trades                         |
 //+------------------------------------------------------------------+
 void LogCurrentSpread()
 {
    int currentSpread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   Print("Current spread: ", currentSpread);
+   Print("Current spread at order execution: ", currentSpread);
 }
 
 //+------------------------------------------------------------------+
-//| Advanced spread handler with multiple options                    |
+//| For compatibility with existing code, does nothing meaningful    |
 //+------------------------------------------------------------------+
-bool HandleSpread(int maxAllowedSpread, ENUM_SPREAD_ACTION action, 
-                 double &adjustedSL, double &adjustedTP)
+void AnalyzeHistoricalSpread(int samples=20, double multiplier=1.5)
 {
    int currentSpread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   string spreadMsg = "Current spread: " + IntegerToString(currentSpread);
-   Print(spreadMsg);
-   
-   // If spread is acceptable, no action needed
-   if(currentSpread <= maxAllowedSpread)
-      return true;
-      
-   // Handle based on selected action
-   switch(action)
-   {
-      case SPREAD_ACTION_SKIP_TRADE:
-      {
-         Print("Spread too high: ", currentSpread, " - Skipping trade");
-         Comment("Spread too high: ", currentSpread, " - Skipping trade");
-         return false;
-      }
-         
-      case SPREAD_ACTION_ADJUST_TP_SL:
-      {
-         int extraPoints = currentSpread - maxAllowedSpread;
-         adjustedSL += extraPoints * _Point;
-         adjustedTP += extraPoints * _Point;
-         Print("Spread too high: ", currentSpread, " - Adjusted SL/TP");
-         return true;
-      }
-         
-      case SPREAD_ACTION_IGNORE:
-      {
-         Print("Trading despite high spread: ", currentSpread);
-         return true;
-      }
-         
-      default:
-         return false;
-   }
+   Print("Current spread: ", currentSpread, " (spread limit disabled)");
 }
 
 //+------------------------------------------------------------------+
-//| Get historical spread statistics                                 |
+//| For compatibility with existing code, does nothing meaningful    |
 //+------------------------------------------------------------------+
-void AnalyzeSpreadHistory(int &avgSpread, int &maxSpread, int &minSpread, int bars=100)
+void AdjustLevelsForHighSpread(int currentSpread, int normalSpread, 
+                              double &stopLoss, double &takeProfit, bool isBuy)
 {
-   avgSpread = 0;
-   maxSpread = 0;
-   minSpread = INT_MAX;
-   
-   double totalSpread = 0.0;
-   
-   for(int i=0; i<bars; i++)
-   {
-      int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      
-      // Update statistics
-      totalSpread += spread;
-      
-      if(spread > maxSpread)
-         maxSpread = spread;
-         
-      if(spread < minSpread)
-         minSpread = spread;
-         
-      // Small delay to get different spread measurements
-      Sleep(50);
-   }
-   
-   // Calculate average - avoid type conversion warnings
-   if(bars > 0)
-      avgSpread = (int)(totalSpread / bars);
-      
-   Print("Spread Analysis - Avg: ", avgSpread, ", Max: ", maxSpread, ", Min: ", minSpread);
+   // This function now does nothing since we're ignoring spread
+   Print("Spread adjustment disabled, using original SL/TP levels");
 }
