@@ -7,6 +7,7 @@
 #property link      ""
 #property version   "1.00"
 #property strict
+#property description "EMA Engulfing EA - Specifically designed for the 30-minute timeframe"
 
 // Input parameters
 input int         EMA_Period = 20;       // EMA period
@@ -21,6 +22,7 @@ input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strateg
 input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
 input int         SR_Lookback = 50;      // Lookback period for S/R detection
 input double      SR_Strength = 3;       // Minimum touches for valid S/R
+input bool        EnforceM30 = true;     // Enforce M30 timeframe only
 
 // Global variables
 int emaHandle;
@@ -28,14 +30,22 @@ double emaValues[];
 int barCount;
 ulong posTicket1 = 0;
 ulong posTicket2 = 0;
+ENUM_TIMEFRAMES targetTimeframe = PERIOD_M30; // Set target timeframe to M30
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                    |
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // Check if current chart timeframe is M30
+   if(EnforceM30 && Period() != targetTimeframe)
+   {
+      Print("Error: EA is designed for M30 timeframe only. Current timeframe: ", EnumToString(Period()));
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
    // Initialize EMA indicator
-   emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+   emaHandle = iMA(_Symbol, targetTimeframe, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
    
    if(emaHandle == INVALID_HANDLE)
    {
@@ -44,7 +54,9 @@ int OnInit()
    }
    
    // Initialize barCount to track new bars
-   barCount = Bars(_Symbol, PERIOD_CURRENT);
+   barCount = Bars(_Symbol, targetTimeframe);
+   
+   Print("EMA Engulfing EA initialized successfully for M30 timeframe");
    
    return(INIT_SUCCEEDED);
 }
@@ -64,12 +76,20 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // Re-check timeframe on every tick if enforced
+   if(EnforceM30 && Period() != targetTimeframe)
+   {
+      return; // Silent exit if not on M30 timeframe
+   }
+   
    // Check if we have a new bar
-   int currentBars = Bars(_Symbol, PERIOD_CURRENT);
+   int currentBars = Bars(_Symbol, targetTimeframe);
    if(currentBars == barCount)
       return;  // No new bar, exit
       
    barCount = currentBars;
+   
+   Print("New M30 bar detected. Analyzing trading opportunities...");
    
    // Update indicators
    if(!UpdateIndicators())
@@ -102,7 +122,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
-   // Get EMA values for the last 3 bars
+   // Get EMA values for the last 3 bars on M30 timeframe
    ArraySetAsSeries(emaValues, true);
    if(CopyBuffer(emaHandle, 0, 0, 3, emaValues) < 3)
    {
@@ -135,10 +155,10 @@ bool HasOpenPositions()
 //+------------------------------------------------------------------+
 bool IsEngulfing(int shift, bool bullish)
 {
-   double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift + 1);
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
-   double open2 = iOpen(_Symbol, PERIOD_CURRENT, shift);
-   double close2 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   double open1 = iOpen(_Symbol, targetTimeframe, shift + 1);
+   double close1 = iClose(_Symbol, targetTimeframe, shift + 1);
+   double open2 = iOpen(_Symbol, targetTimeframe, shift);
+   double close2 = iClose(_Symbol, targetTimeframe, shift);
    
    if(bullish) // Bullish engulfing
    {
@@ -161,8 +181,8 @@ bool IsEngulfing(int shift, bool bullish)
 //+------------------------------------------------------------------+
 bool CrossedEMA(int shift, bool upward)
 {
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
-   double close0 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   double close1 = iClose(_Symbol, targetTimeframe, shift + 1);
+   double close0 = iClose(_Symbol, targetTimeframe, shift);
    
    if(upward)
       return close1 < emaValues[shift + 1] && close0 > emaValues[shift];
@@ -177,7 +197,7 @@ bool StayedOnSideOfEMA(int startBar, int bars, bool above)
 {
    for(int i = startBar; i < startBar + bars; i++)
    {
-      double close = iClose(_Symbol, PERIOD_CURRENT, i);
+      double close = iClose(_Symbol, targetTimeframe, i);
       
       if(above && close < emaValues[i])
          return false;
@@ -200,8 +220,8 @@ double FindNearestSR(bool findResistance)
    // Look for potential S/R points in the lookback period
    for(int i = 1; i < SR_Lookback - 1; i++)
    {
-      double high = iHigh(_Symbol, PERIOD_CURRENT, i);
-      double low = iLow(_Symbol, PERIOD_CURRENT, i);
+      double high = iHigh(_Symbol, targetTimeframe, i);
+      double low = iLow(_Symbol, targetTimeframe, i);
       
       if(findResistance)
       {
@@ -251,17 +271,17 @@ double FindNearestSR(bool findResistance)
 //+------------------------------------------------------------------+
 bool IsResistanceLevel(int barIndex, double strength)
 {
-   double high = iHigh(_Symbol, PERIOD_CURRENT, barIndex);
+   double high = iHigh(_Symbol, targetTimeframe, barIndex);
    int count = 0;
    
    // Check if the high is a local maximum
-   if(high > iHigh(_Symbol, PERIOD_CURRENT, barIndex + 1) && 
-      high > iHigh(_Symbol, PERIOD_CURRENT, barIndex - 1))
+   if(high > iHigh(_Symbol, targetTimeframe, barIndex + 1) && 
+      high > iHigh(_Symbol, targetTimeframe, barIndex - 1))
    {
       // Count how many times price approached this level
       for(int i = 0; i < SR_Lookback; i++)
       {
-         double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
+         double barHigh = iHigh(_Symbol, targetTimeframe, i);
          if(MathAbs(barHigh - high) <= 10 * _Point)
             count++;
       }
@@ -275,17 +295,17 @@ bool IsResistanceLevel(int barIndex, double strength)
 //+------------------------------------------------------------------+
 bool IsSupportLevel(int barIndex, double strength)
 {
-   double low = iLow(_Symbol, PERIOD_CURRENT, barIndex);
+   double low = iLow(_Symbol, targetTimeframe, barIndex);
    int count = 0;
    
    // Check if the low is a local minimum
-   if(low < iLow(_Symbol, PERIOD_CURRENT, barIndex + 1) && 
-      low < iLow(_Symbol, PERIOD_CURRENT, barIndex - 1))
+   if(low < iLow(_Symbol, targetTimeframe, barIndex + 1) && 
+      low < iLow(_Symbol, targetTimeframe, barIndex - 1))
    {
       // Count how many times price approached this level
       for(int i = 0; i < SR_Lookback; i++)
       {
-         double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
+         double barLow = iLow(_Symbol, targetTimeframe, i);
          if(MathAbs(barLow - low) <= 10 * _Point)
             count++;
       }
@@ -299,8 +319,8 @@ bool IsSupportLevel(int barIndex, double strength)
 //+------------------------------------------------------------------+
 bool BrokeLevel(int shift, double level, bool breakUp)
 {
-   double close = iClose(_Symbol, PERIOD_CURRENT, shift);
-   double prevClose = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
+   double close = iClose(_Symbol, targetTimeframe, shift);
+   double prevClose = iClose(_Symbol, targetTimeframe, shift + 1);
    
    if(breakUp)
       return prevClose < level && close > level;
@@ -343,7 +363,7 @@ bool CheckStrategy1()
 //+------------------------------------------------------------------+
 bool CheckStrategy2()
 {
-   double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double currentPrice = iClose(_Symbol, targetTimeframe, 0);
    
    // Find nearest support and resistance
    double resistance = FindNearestSR(true);
@@ -408,21 +428,22 @@ bool CheckStrategy3()
 //+------------------------------------------------------------------+
 void ExecuteTrade(bool isBuy, double targetLevel)
 {
+   // Get current price data on M30 timeframe
    double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double stopLoss = 0;
    double takeProfit1 = 0;
    double takeProfit2 = 0;
    
-   // Calculate stop loss based on the previous candle
+   // Calculate stop loss based on the previous M30 candle
    if(isBuy)
    {
-      stopLoss = iLow(_Symbol, PERIOD_CURRENT, 1) - SL_Buffer_Pips * _Point;
+      stopLoss = iLow(_Symbol, targetTimeframe, 1) - SL_Buffer_Pips * _Point;
       takeProfit1 = currentPrice + (currentPrice - stopLoss) * RR_Ratio_1;
       takeProfit2 = currentPrice + (currentPrice - stopLoss) * RR_Ratio_2;
    }
    else
    {
-      stopLoss = iHigh(_Symbol, PERIOD_CURRENT, 1) + SL_Buffer_Pips * _Point;
+      stopLoss = iHigh(_Symbol, targetTimeframe, 1) + SL_Buffer_Pips * _Point;
       takeProfit1 = currentPrice - (stopLoss - currentPrice) * RR_Ratio_1;
       takeProfit2 = currentPrice - (stopLoss - currentPrice) * RR_Ratio_2;
    }
@@ -440,7 +461,7 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    request1.tp = takeProfit1;
    request1.deviation = 10;
    request1.magic = 123456;
-   request1.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP1";
+   request1.comment = "M30 Strategy " + string(isBuy ? "Buy" : "Sell") + " TP1";
    
    OrderSend(request1, result1);
    
@@ -461,7 +482,7 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       request2.tp = takeProfit2;
       request2.deviation = 10;
       request2.magic = 123456;
-      request2.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP2";
+      request2.comment = "M30 Strategy " + string(isBuy ? "Buy" : "Sell") + " TP2";
       
       OrderSend(request2, result2);
       
@@ -470,16 +491,16 @@ void ExecuteTrade(bool isBuy, double targetLevel)
          posTicket2 = result2.deal;
          
          string direction = isBuy ? "BUY" : "SELL";
-         Print("Executed ", direction, " trades. SL at ", stopLoss, ", TP1 at ", takeProfit1, ", TP2 at ", takeProfit2);
+         Print("Executed M30 ", direction, " trades. SL at ", stopLoss, ", TP1 at ", takeProfit1, ", TP2 at ", takeProfit2);
       }
       else
       {
-         Print("Failed to execute second trade. Error: ", GetLastError());
+         Print("Failed to execute second M30 trade. Error: ", GetLastError());
       }
    }
    else
    {
-      Print("Failed to execute first trade. Error: ", GetLastError());
+      Print("Failed to execute first M30 trade. Error: ", GetLastError());
    }
 }
 
