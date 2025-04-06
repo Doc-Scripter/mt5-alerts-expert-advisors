@@ -13,8 +13,8 @@
 
 // Input parameters
 input int         EMA_Period = 20;       // EMA period
-input double      Lot_Size_1 = 0.01;     // First entry lot size
-input double      Lot_Size_2 = 0.02;     // Second entry lot size
+input double      Lot_Size_1 = 1;     // First entry lot size
+input double      Lot_Size_2 = 2;     // Second entry lot size
 input double      RR_Ratio_1 = 1.7;      // Risk:Reward ratio for first target
 input double      RR_Ratio_2 = 2.0;      // Risk:Reward ratio for second target
 input int         Max_Spread = 180;      // Maximum spread for logging purposes only
@@ -22,11 +22,17 @@ input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strateg
 input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
 input bool        Use_Strategy_4 = true; // Use simple engulfing strategy
+input bool        Use_Strategy_5 = true;  // Use simple movement strategy (for testing)
 input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
 input int         SR_Lookback = 50;       // Number of candles to look back for S/R levels
 input int         SR_Strength = 3;        // Minimum number of touches for S/R level
 input double      SR_Tolerance = 0.0005;   // Tolerance for S/R level detection
 input int         SR_MinBars = 3;        // Minimum bars between S/R levels
+
+// Strategy 5 Inputs
+input double      S5_Lot_Size = 1;    // Lot size for Strategy 5
+input int         S5_Min_Body_Pips = 1; // Minimum candle body size in pips for Strategy 5
+input int         S5_TP_Pips = 10;      // Take Profit distance in pips for Strategy 5
 
 // Global variables
 int emaHandle;
@@ -34,6 +40,11 @@ double emaValues[];
 int barCount;
 ulong posTicket1 = 0;
 ulong posTicket2 = 0;
+
+// Symbol Volume Constraints
+double volMin = 0.0;
+double volMax = 0.0;
+double volStep = 0.0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                    |
@@ -53,6 +64,23 @@ int OnInit()
       Print("Trading is not allowed for ", _Symbol);
       return(INIT_FAILED);
    }
+   
+   // Get symbol volume constraints
+   volMin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   volMax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   volStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   
+   if(volMin <= 0 || volMax <= 0 || volStep <= 0)
+   {
+      Print("Failed to get valid volume constraints for ", _Symbol);
+      // You might want to fail initialization or use default safe values
+      return(INIT_FAILED); 
+   }
+   
+   Print("Symbol Volume Constraints:");
+   Print("  Min Volume: ", volMin);
+   Print("  Max Volume: ", volMax);
+   Print("  Volume Step: ", volStep);
    
    // Initialize EMA indicator
    emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
@@ -120,6 +148,9 @@ void OnTick()
       return;
       
    if(Use_Strategy_4 && CheckStrategy4())
+      return;
+      
+   if(Use_Strategy_5 && CheckStrategy5())
       return;
 }
 
@@ -655,6 +686,241 @@ bool CheckStrategy4()
 }
 
 //+------------------------------------------------------------------+
+//| Strategy 5: Simple movement strategy (for testing)                  |
+//+------------------------------------------------------------------+
+bool CheckStrategy5()
+{
+   Print("Checking Strategy 5 conditions...");
+   // Use shift = 1 to check the last completed bar
+   int shift = 1;
+   double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift);
+   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   
+   // Check if bar data is available
+   if(open1 == 0 || close1 == 0)
+   {
+      Print("Strategy 5 - Not enough data for bar at shift ", shift);
+      return false;
+   }
+   
+   double bodySize = MathAbs(close1 - open1);
+   double bodySizePips = bodySize / _Point;
+   
+   Print("Strategy 5 - Previous Candle (shift=", shift, ") Body Size: ", bodySizePips, " pips");
+   Print("  - Open: ", open1, ", Close: ", close1);
+   
+   if(bodySizePips > S5_Min_Body_Pips)
+   {
+      bool isBuy = (close1 > open1); // Determine direction based on the completed bar
+      Print("Strategy 5 - Triggered based on previous bar. Direction: ", isBuy ? "BUY" : "SELL");
+      ExecuteTradeStrategy5(isBuy);
+      return true;
+   }
+   else
+   {
+      Print("Strategy 5 - Previous candle body size too small (", bodySizePips, " <= ", S5_Min_Body_Pips, ")");
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Strategy 5 trade                                         |
+//+------------------------------------------------------------------+
+void ExecuteTradeStrategy5(bool isBuy)
+{
+   Print("Attempting to execute Strategy 5 ", isBuy ? "BUY" : "SELL", " trade...");
+   
+   // Log current spread at time of trade execution (for information only)
+   LogCurrentSpread();
+   
+   // Get current prices and minimum distance
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double minStopDistPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   
+   // Determine entry price, SL, and TP
+   double entryPrice = 0;
+   double stopLoss = 0;
+   double takeProfit = 0;
+   
+   if(isBuy)
+   {
+      entryPrice = ask;
+      // Place SL below current Bid, respecting minimum stops level
+      stopLoss = bid - minStopDistPoints;
+      // Correct TP logic: TP above entry for BUY
+      takeProfit = ask + S5_TP_Pips * _Point;
+      // Ensure TP is at least minStopDistPoints away from Ask
+      takeProfit = MathMax(takeProfit, ask + minStopDistPoints);
+   }
+   else // Sell
+   {
+      entryPrice = bid;
+      // Place SL above current Ask, respecting minimum stops level
+      stopLoss = ask + minStopDistPoints;
+      // Correct TP logic: TP below entry for SELL
+      takeProfit = bid - S5_TP_Pips * _Point;
+      // Ensure TP is at least minStopDistPoints away from Bid
+      takeProfit = MathMin(takeProfit, bid - minStopDistPoints);
+   }
+   
+   // Normalize prices to the correct number of digits
+   stopLoss = NormalizeDouble(stopLoss, _Digits);
+   takeProfit = NormalizeDouble(takeProfit, _Digits);
+   
+   Print("Strategy 5 Trade Parameters (Corrected TP Logic):");
+   Print("  - Direction: ", isBuy ? "BUY" : "SELL");
+   Print("  - Entry Price (Approx): ", entryPrice); // Market order, actual entry may vary slightly
+   Print("  - Stop Loss: ", stopLoss);
+   Print("  - Take Profit: ", takeProfit);
+   
+   //--- Check if calculated SL/TP are logical --- 
+   if(isBuy)
+   {
+      if(stopLoss >= entryPrice)
+      {
+         Print("Strategy 5 Error: Calculated SL (", stopLoss, ") is not below Ask price (", entryPrice, "). Aborting trade.");
+         return;
+      }
+      if(takeProfit >= entryPrice)
+      {
+          Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not below Ask price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
+          // Adjust TP further if necessary, e.g., set it equal to SL? Or skip TP?
+          // For now, we proceed but log warning. Broker might still reject.
+      }
+   }
+   else // Sell
+   {
+      if(stopLoss <= entryPrice)
+      {
+         Print("Strategy 5 Error: Calculated SL (", stopLoss, ") is not above Bid price (", entryPrice, "). Aborting trade.");
+         return;
+      }
+       if(takeProfit <= entryPrice)
+      {
+          Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not above Bid price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
+          // Adjust TP further if necessary? Or skip TP?
+          // For now, we proceed but log warning. Broker might still reject.
+      }
+   }
+
+   // Normalize volume
+   double normalizedLotSize = NormalizeVolume(S5_Lot_Size);
+   if(normalizedLotSize != S5_Lot_Size)
+   {
+      Print("Strategy 5: Input Lot Size (", S5_Lot_Size, ") adjusted to Symbol constraints: ", normalizedLotSize);
+   }
+   
+   if(normalizedLotSize <= 0)
+   {
+      Print("Strategy 5 Error: Normalized lot size is zero or less. Cannot trade. Check input lot size and symbol constraints.");
+      return;
+   }
+
+   // Place the order
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+   
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = normalizedLotSize; // Use normalized volume
+   request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   // For market orders, price is ignored, but fill it for clarity
+   request.price = isBuy ? ask : bid; 
+   request.sl = stopLoss;
+   request.tp = takeProfit;
+   request.deviation = 10;
+   request.magic = 654321; // Use a different magic number for Strategy 5
+   request.comment = "Strategy 5 " + string(isBuy ? "Buy" : "Sell");
+   
+   Print("Sending Strategy 5 order...");
+   
+   // Check return value of OrderSend
+   bool orderSent = OrderSend(request, result);
+   
+   // Enhanced Error Logging
+   if(!orderSent)
+   {   
+       Print("OrderSend function failed immediately. Error code: ", GetLastError());
+       // Check specific potential issues based on error code if needed
+       if(GetLastError() == TRADE_RETCODE_INVALID_STOPS)
+          Print("Failure Reason: Invalid Stops (SL/TP too close or wrong side)");
+       // Add more specific checks here
+       return;
+   }
+   
+   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED) // Placed for pending orders, Done for market execution
+   {
+      ulong ticket = (result.order > 0) ? result.order : result.deal;
+      Print("Strategy 5 order executed/placed successfully. Ticket/Deal ID: ", ticket);
+      Print("  Result Code: ", result.retcode, " (", TradeRetcodeToString(result.retcode), ")");
+      Print("  Result Comment: ", result.comment);
+   }
+   else
+   {   
+      Print("Strategy 5 order failed. Error code: ", GetLastError(), // This might be 0 if OrderSend returned true but execution failed
+            ", Result Code: ", result.retcode, " (", TradeRetcodeToString(result.retcode), ")",
+            ", Message: ", result.comment);
+      // Log more details from the result structure if helpful
+      Print("  Result Ask: ", result.ask, ", Bid: ", result.bid, ", Price: ", result.price, ", Volume: ", result.volume);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper to convert Trade Retcode to String (Revised & Simplified) |
+//+------------------------------------------------------------------+
+string TradeRetcodeToString(uint retcode)
+{
+    switch(retcode)
+    {
+        // Core MQL5 Trade Server Return Codes based on MqlTradeResult documentation
+        case TRADE_RETCODE_REQUOTE:             return "Requote (10004)";
+        case TRADE_RETCODE_REJECT:              return "Reject (10008)";
+        case TRADE_RETCODE_CANCEL:              return "Cancel (10009)";
+        case TRADE_RETCODE_PLACED:              return "Placed (10010)"; // Order placed in system
+        case TRADE_RETCODE_DONE:                return "Done (10011)";   // Request completed
+        case TRADE_RETCODE_DONE_PARTIAL:        return "Done Partial (10012)";
+        case TRADE_RETCODE_ERROR:               return "Error (10013)";
+        case TRADE_RETCODE_TIMEOUT:             return "Timeout (10014)";
+        case TRADE_RETCODE_INVALID:             return "Invalid Request (10015)";
+        case TRADE_RETCODE_INVALID_VOLUME:      return "Invalid Volume (10016)";
+        case TRADE_RETCODE_INVALID_PRICE:       return "Invalid Price (10017)";
+        case TRADE_RETCODE_INVALID_STOPS:       return "Invalid Stops (10018)";
+        // case TRADE_RETCODE_INVALID_TRADE_VOLUME: return "Invalid Trade Volume (10019)"; // Often overlaps/less common
+        // case TRADE_RETCODE_ORDER_FROZEN:        return "Order Frozen (10020)"; // Less common/may not be defined
+        case TRADE_RETCODE_INVALID_EXPIRATION:  return "Invalid Expiration (10021)";
+        case TRADE_RETCODE_CONNECTION:          return "Connection Problem (10022)";
+        case TRADE_RETCODE_TOO_MANY_REQUESTS:   return "Too Many Requests (10023)";
+        case TRADE_RETCODE_NO_MONEY:            return "No Money (10024)"; // Or Not Enough Money
+        // case TRADE_RETCODE_NOT_ENOUGH_MONEY:    return "Not Enough Money (10025)"; // Covered by NO_MONEY
+        case TRADE_RETCODE_PRICE_CHANGED:       return "Price Changed (10026)";
+        case TRADE_RETCODE_TRADE_DISABLED:      return "Trade Disabled (10027)";
+        case TRADE_RETCODE_MARKET_CLOSED:       return "Market Closed (10028)";
+        case TRADE_RETCODE_INVALID_ORDER:       return "Invalid Order (10029)";
+        case TRADE_RETCODE_INVALID_FILL:        return "Invalid Fill (10030)";
+        // case TRADE_RETCODE_TRADE_NOT_ALLOWED:   return "Trade Not Allowed (10031)"; // Often covered by DISABLED
+        // The following are less common or potentially platform-specific
+        // case TRADE_RETCODE_AUTH_FAILED:         return "Auth Failed (10032)";
+        // case TRADE_RETCODE_HEADER_INVALID:      return "Header Invalid (10033)";
+        // case TRADE_RETCODE_REQUEST_INVALID:     return "Request Invalid (10034)";
+        // case TRADE_RETCODE_ACCOUNT_DISABLED:    return "Account Disabled (10035)";
+        // case TRADE_RETCODE_INVALID_ACCOUNT:     return "Invalid Account (10036)";
+        // case TRADE_RETCODE_TRADE_TIMEOUT:       return "Trade Timeout (10037)";
+        // case TRADE_RETCODE_ORDER_NOT_FOUND:     return "Order Not Found (10038)"; 
+        // case TRADE_RETCODE_PRICE_OFF:           return "Price Off (10039)";
+        // case TRADE_RETCODE_INVALID_STOPLOSS:    return "Invalid Stoploss (10040)";
+        // case TRADE_RETCODE_INVALID_TAKEPROFIT:  return "Invalid Takeproprofit (10041)";
+        // case TRADE_RETCODE_POSITION_CLOSED:     return "Position Closed (10042)";
+        case TRADE_RETCODE_LIMIT_POSITIONS:     return "Limit Positions (10043)";
+        case TRADE_RETCODE_LIMIT_ORDERS:        return "Limit Orders (10044)";
+        // case TRADE_RETCODE_LIMIT_VOLUME:        return "Limit Volume (10045)";
+        // case TRADE_RETCODE_ORDER_REJECTED:      return "Order Rejected (10046)"; // Covered by REJECT
+        // case TRADE_RETCODE_UNSUPPORTED_FILL_POLICY: return "Unsupported Fill Policy (10047)";
+        default:                                return "Unknown (" + (string)retcode + ")";
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Execute trade with proper risk management                        |
 //+------------------------------------------------------------------+
 void ExecuteTrade(bool isBuy, double targetLevel)
@@ -742,13 +1008,28 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    Print("  - Take Profit 1: ", takeProfit1);
    Print("  - Take Profit 2: ", takeProfit2);
    
+   // Normalize lot sizes
+   double normalizedLot1 = NormalizeVolume(Lot_Size_1);
+   double normalizedLot2 = NormalizeVolume(Lot_Size_2);
+   
+   if(normalizedLot1 != Lot_Size_1)
+      Print("Strategy 1-4: Lot Size 1 (", Lot_Size_1, ") adjusted to Symbol constraints: ", normalizedLot1);
+   if(normalizedLot2 != Lot_Size_2)
+      Print("Strategy 1-4: Lot Size 2 (", Lot_Size_2, ") adjusted to Symbol constraints: ", normalizedLot2);
+      
+   if(normalizedLot1 <= 0 || normalizedLot2 <= 0)
+   {
+      Print("Strategy 1-4 Error: Normalized lot size is zero or less. Cannot trade. Check input lot sizes and symbol constraints.");
+      return;
+   }
+   
    // Place first order
    MqlTradeRequest request1 = {};
    MqlTradeResult result1 = {};
    
    request1.action = TRADE_ACTION_DEAL;
    request1.symbol = _Symbol;
-   request1.volume = Lot_Size_1;
+   request1.volume = normalizedLot1; // Use normalized volume
    request1.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    request1.price = currentPrice;
    request1.sl = stopLoss;
@@ -780,7 +1061,7 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       
       request2.action = TRADE_ACTION_DEAL;
       request2.symbol = _Symbol;
-      request2.volume = Lot_Size_2;
+      request2.volume = normalizedLot2; // Use normalized volume
       request2.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
       request2.price = currentPrice;
       request2.sl = stopLoss;
@@ -824,6 +1105,30 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    {
       Print("Failed to execute first trade. Error: ", GetLastError());
    }
+}
+
+//+------------------------------------------------------------------+
+//| Normalize volume according to symbol constraints                 |
+//+------------------------------------------------------------------+
+double NormalizeVolume(double desiredVolume)
+{
+   // Ensure volume is within min/max limits
+   desiredVolume = MathMax(volMin, desiredVolume);
+   desiredVolume = MathMin(volMax, desiredVolume);
+   
+   // Adjust volume to the nearest valid step
+   // Calculate how many steps fit into the volume
+   double steps = MathRound((desiredVolume - volMin) / volStep);
+   // Calculate the normalized volume
+   double normalizedVolume = volMin + steps * volStep;
+   
+   // Final check to ensure it doesn't slightly exceed max due to floating point math
+   normalizedVolume = MathMin(volMax, normalizedVolume);
+   
+   // Ensure it's not below min either
+   normalizedVolume = MathMax(volMin, normalizedVolume);
+   
+   return normalizedVolume;
 }
 
 //+------------------------------------------------------------------+
