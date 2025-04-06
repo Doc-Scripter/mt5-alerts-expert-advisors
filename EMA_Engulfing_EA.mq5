@@ -18,21 +18,26 @@ input double      Lot_Size_2 = 2;     // Second entry lot size
 input double      RR_Ratio_1 = 1.7;      // Risk:Reward ratio for first target
 input double      RR_Ratio_2 = 2.0;      // Risk:Reward ratio for second target
 input int         Max_Spread = 180;      // Maximum spread for logging purposes only
-input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strategy
-input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
-input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
+input bool        Use_Strategy_1 = false; // Use EMA crossing + engulfing strategy
+input bool        Use_Strategy_2 = false; // Use S/R engulfing strategy
+input bool        Use_Strategy_3 = false; // Use breakout + EMA engulfing strategy
 input bool        Use_Strategy_4 = true; // Use simple engulfing strategy
-input bool        Use_Strategy_5 = true;  // Use simple movement strategy (for testing)
+input bool        Use_Strategy_5 = false;  // Use simple movement strategy (for testing)
 input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
 input int         SR_Lookback = 50;       // Number of candles to look back for S/R levels
 input int         SR_Strength = 3;        // Minimum number of touches for S/R level
 input double      SR_Tolerance = 0.0005;   // Tolerance for S/R level detection
 input int         SR_MinBars = 3;        // Minimum bars between S/R levels
+input int         Engulfing_AvgBody_Period = 12; // Period for Avg Body Size check in IsEngulfing
+input bool        Engulfing_Use_Trend_Filter = false; // Use MA trend filter in IsEngulfing
 
 // Strategy 5 Inputs
 input double      S5_Lot_Size = 1;    // Lot size for Strategy 5
 input int         S5_Min_Body_Pips = 1; // Minimum candle body size in pips for Strategy 5
-input int         S5_TP_Pips = 10;      // Take Profit distance in pips for Strategy 5
+input int         S5_TP_Pips = 10;      // Take Profit distance in pips for Strategy 5 (Increased Default)
+input bool        S5_Use_Trailing_Stop = true; // Enable trailing stop for Strategy 5
+input int         S5_Trail_Pips = 5;      // Trailing stop distance in pips
+input int         S5_Trail_Activation_Pips = 5; // Pips in profit to activate trailing stop
 
 // Global variables
 int emaHandle;
@@ -119,7 +124,11 @@ void OnTick()
    // Check if we have a new bar
    int currentBars = Bars(_Symbol, PERIOD_CURRENT);
    if(currentBars == barCount)
-      return;  // No new bar, exit
+   {  // No new bar, check for trailing stop management
+      if(S5_Use_Trailing_Stop)
+         ManageStrategy5Position();
+      return; 
+   }   
       
    barCount = currentBars;
    
@@ -127,9 +136,15 @@ void OnTick()
    if(!UpdateIndicators())
       return;
       
-   // Check for open positions
+   // Check for open positions (prevents opening new ones while others exist)
+   // Note: This check might prevent S5 from opening if other strategy positions are open
    if(HasOpenPositions())
+   {
+      // Still manage S5 trailing stop even if other positions are open
+      if(S5_Use_Trailing_Stop)
+         ManageStrategy5Position(); 
       return;
+   }
       
    // Log current spread for reference (but don't use it to limit trading)
    IsSpreadAcceptable(Max_Spread);
@@ -137,7 +152,7 @@ void OnTick()
    // Reset comment
    Comment("");
       
-   // Check strategy conditions
+   // Check strategy conditions (these return if they execute a trade)
    if(Use_Strategy_1 && CheckStrategy1())
       return;
       
@@ -150,8 +165,12 @@ void OnTick()
    if(Use_Strategy_4 && CheckStrategy4())
       return;
       
-   if(Use_Strategy_5 && CheckStrategy5())
+   if(Use_Strategy_5 && CheckStrategy5()) 
       return;
+      
+   // If no trade was executed, ensure trailing stop is still managed on new bar
+   if(S5_Use_Trailing_Stop)
+      ManageStrategy5Position();
 }
 
 //+------------------------------------------------------------------+
@@ -188,84 +207,107 @@ bool HasOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Check if the current bar forms an engulfing pattern              |
+//| Check if the current bar forms an engulfing pattern (Indicator Logic) |
 //+------------------------------------------------------------------+
 bool IsEngulfing(int shift, bool bullish)
 {
-   double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift + 1);
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
-   double open2 = iOpen(_Symbol, PERIOD_CURRENT, shift);
-   double close2 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   // Use index i for current, i+1 for prior, aligning with indicator logic
+   int i = shift;     // Typically 0 when called from CheckStrategyX
+   int priorIdx = i + 1; // Typically 1 when called from CheckStrategyX
    
-   // Calculate price range for tolerance
-   double range = MathAbs(open1 - close1);
-   double tolerance = range * 0.2; // Increased to 20% of the previous candle's range
-   
-   // Add minimum tolerance to handle small ranges
-   double minTolerance = 5 * _Point;
-   tolerance = MathMax(tolerance, minTolerance);
-   
-   Print("Analyzing candles for engulfing pattern:");
-   Print("  - Current Bar (", shift, "): Open=", open2, " Close=", close2);
-   Print("  - Previous Bar (", shift + 1, "): Open=", open1, " Close=", close1);
-   Print("  - Tolerance: ", tolerance);
-   
-   if(bullish) // Bullish engulfing
+   // Basic check for sufficient bars
+   if(Bars(_Symbol, PERIOD_CURRENT) < Engulfing_AvgBody_Period + 3 || priorIdx < 0)
    {
-      // More lenient condition for prior candle being bearish
-      bool condition1 = (close1 <= open1 + tolerance); // Prior candle is bearish or doji
-      bool condition2 = (close2 >= open2 - tolerance); // Current candle is bullish or doji
-      bool condition3 = (open2 <= close1 + tolerance); // Current open is below or equal to prior close
-      bool condition4 = (close2 > open1 - tolerance); // Current close is above prior open
-      
-      Print("Checking Bullish Engulfing Conditions:");
-      Print("  - Prior Candle Bearish/Doji: ", condition1, " (Close: ", close1, " <= Open: ", open1 + tolerance, ")");
-      Print("  - Current Candle Bullish/Doji: ", condition2, " (Close: ", close2, " >= Open: ", open2 - tolerance, ")");
-      Print("  - Current Open <= Prior Close: ", condition3, " (", open2, " <= ", close1 + tolerance, ")");
-      Print("  - Current Close > Prior Open: ", condition4, " (", close2, " > ", open1 - tolerance, ")");
-      
-      bool isEngulfing = condition1 && condition2 && condition3 && condition4;
-      Print("  - All Conditions Met: ", isEngulfing);
-      
-      if(!isEngulfing)
-      {
-         Print("  - Failed Conditions:");
-         if(!condition1) Print("    * Prior candle is not bearish or doji");
-         if(!condition2) Print("    * Current candle is not bullish or doji");
-         if(!condition3) Print("    * Current open is not below or equal to prior close");
-         if(!condition4) Print("    * Current close is not above prior open");
-      }
-      
-      return isEngulfing;
+      // Print("IsEngulfing Error: Not enough bars available for calculation.");
+      return false;
    }
-   else // Bearish engulfing
+
+   // Get required price data using iOpen/iClose etc. for reliability
+   double open1 = iOpen(_Symbol, PERIOD_CURRENT, i);     // Current Open
+   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);    // Current Close
+   double open2 = iOpen(_Symbol, PERIOD_CURRENT, priorIdx); // Prior Open
+   double close2 = iClose(_Symbol, PERIOD_CURRENT, priorIdx);  // Prior Close
+   
+   // Check for valid data
+   if(open1 == 0 || close1 == 0 || open2 == 0 || close2 == 0)
    {
-      // More lenient condition for prior candle being bullish
-      bool condition1 = (close1 >= open1 - tolerance); // Prior candle is bullish or doji
-      bool condition2 = (close2 <= open2 + tolerance); // Current candle is bearish or doji
-      bool condition3 = (open2 >= close1 - tolerance); // Current open is above or equal to prior close
-      bool condition4 = (close2 < open1 + tolerance); // Current close is below prior open
-      
-      Print("Checking Bearish Engulfing Conditions:");
-      Print("  - Prior Candle Bullish/Doji: ", condition1, " (Close: ", close1, " >= Open: ", open1 - tolerance, ")");
-      Print("  - Current Candle Bearish/Doji: ", condition2, " (Close: ", close2, " <= Open: ", open2 + tolerance, ")");
-      Print("  - Current Open >= Prior Close: ", condition3, " (", open2, " >= ", close1 - tolerance, ")");
-      Print("  - Current Close < Prior Open: ", condition4, " (", close2, " < ", open1 + tolerance, ")");
-      
-      bool isEngulfing = condition1 && condition2 && condition3 && condition4;
-      Print("  - All Conditions Met: ", isEngulfing);
-      
-      if(!isEngulfing)
-      {
-         Print("  - Failed Conditions:");
-         if(!condition1) Print("    * Prior candle is not bullish or doji");
-         if(!condition2) Print("    * Current candle is not bearish or doji");
-         if(!condition3) Print("    * Current open is not above or equal to prior close");
-         if(!condition4) Print("    * Current close is not below prior open");
-      }
-      
-      return isEngulfing;
+      Print("IsEngulfing Error: Invalid price data for index ", i, " or ", priorIdx);
+      return false;
    }
+   
+   // Calculate current body size
+   double body1 = MathAbs(open1 - close1); 
+
+   // Calculate average body size ending at the prior bar
+   double avgBody = CalculateAverageBody(Engulfing_AvgBody_Period, priorIdx); 
+   if(avgBody <= 0) 
+   {
+       Print("IsEngulfing Warning: Could not calculate valid Average Body Size. Skipping avg body check.");
+   }
+   
+   // --- Trend Filter (Optional) --- 
+   bool trendOkBull = true; 
+   bool trendOkBear = true;
+   if(Engulfing_Use_Trend_Filter)
+   {
+      // Ensure emaValues are up-to-date (should be called in OnTick)
+      if(ArraySize(emaValues) < priorIdx + 1)
+      {
+         Print("IsEngulfing Error: EMA values not available for trend filter index ", priorIdx);
+         return false; // Cannot apply filter if data is missing
+      }
+      double maPrior = emaValues[priorIdx]; // Use pre-calculated EMA value for prior bar
+      double midOCPrior = (open2 + close2) / 2.0; // Midpoint of prior bar
+      
+      trendOkBull = midOCPrior < maPrior; // Trend Filter for Bullish: Prior Mid < MA
+      trendOkBear = midOCPrior > maPrior; // Trend Filter for Bearish: Prior Mid > MA
+   }
+
+   Print("Analyzing candles for engulfing pattern (Indicator Logic):");
+   Print("  - Current Bar (", i, "): O=", open1, " C=", close1, " Body=", body1);
+   Print("  - Previous Bar (", priorIdx, "): O=", open2, " C=", close2);
+   Print("  - Avg Body Size (", Engulfing_AvgBody_Period, " bars ending prior): ", avgBody);
+   if(Engulfing_Use_Trend_Filter)
+      Print("  - Trend Filter: Bullish OK=", trendOkBull, ", Bearish OK=", trendOkBear);
+
+   // --- Check Engulfing Pattern --- 
+   bool isEngulfing = false;
+   
+   if(bullish) // Bullish Engulfing Check
+   {
+      bool priorIsBearish = (close2 < open2);
+      bool currentIsBullish = (close1 > open1);
+      bool engulfsBody = (open1 < close2) && (close1 > open2);
+      bool largerThanAvg = (avgBody > 0) ? (body1 > avgBody) : true; // Skip if avgBody invalid
+      
+      Print("Checking Bullish Engulfing Conditions (Indicator Logic):");
+      Print("  - Prior is Bearish (C2<O2): ", priorIsBearish);
+      Print("  - Current is Bullish (C1>O1): ", currentIsBullish);
+      Print("  - Engulfs Prior Body (O1<C2 && C1>O2): ", engulfsBody);
+      Print("  - Current Body > Avg Body (B1>Avg): ", largerThanAvg, " (Avg:", avgBody, ")");
+      if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBull);
+      
+      isEngulfing = priorIsBearish && currentIsBullish && engulfsBody && largerThanAvg && trendOkBull;
+   }
+   else // Bearish Engulfing Check
+   {
+      bool priorIsBullish = (close2 > open2);
+      bool currentIsBearish = (close1 < open1);
+      bool engulfsBody = (open1 > close2) && (close1 < open2);
+      bool largerThanAvg = (avgBody > 0) ? (body1 > avgBody) : true; // Skip if avgBody invalid
+
+      Print("Checking Bearish Engulfing Conditions (Indicator Logic):");
+      Print("  - Prior is Bullish (C2>O2): ", priorIsBullish);
+      Print("  - Current is Bearish (C1<O1): ", currentIsBearish);
+      Print("  - Engulfs Prior Body (O1>C2 && C1<O2): ", engulfsBody);
+      Print("  - Current Body > Avg Body (B1>Avg): ", largerThanAvg, " (Avg:", avgBody, ")");
+      if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBear);
+      
+      isEngulfing = priorIsBullish && currentIsBearish && engulfsBody && largerThanAvg && trendOkBear;
+   }
+   
+   Print("  - Final Result: ", isEngulfing);
+   return isEngulfing;
 }
 
 //+------------------------------------------------------------------+
@@ -646,39 +688,38 @@ bool CheckStrategy3()
 }
 
 //+------------------------------------------------------------------+
-//| Strategy 4: Simple engulfing pattern                             |
+//| Strategy 4: Simple engulfing pattern (Checks last closed bar)    |
 //+------------------------------------------------------------------+
 bool CheckStrategy4()
 {
    Print("Checking Strategy 4 conditions...");
+   int shiftToCheck = 1; // Check the last completed bar
    
-   // Check for bullish engulfing
-   if(IsEngulfing(0, true))
+   // Check for bullish engulfing on the last closed bar
+   if(IsEngulfing(shiftToCheck, true))
    {
-      Print("Strategy 4 - Bullish engulfing detected");
-      Print("  - Current Price: ", iClose(_Symbol, PERIOD_CURRENT, 0));
-      Print("  - Previous Close: ", iClose(_Symbol, PERIOD_CURRENT, 1));
-      Print("  - Current Open: ", iOpen(_Symbol, PERIOD_CURRENT, 0));
-      Print("  - Previous Open: ", iOpen(_Symbol, PERIOD_CURRENT, 1));
+      Print("Strategy 4 - Bullish engulfing detected on bar ", shiftToCheck);
+      DrawEngulfingMarker(shiftToCheck, true); // Draw marker
+      Print("  - Bar (", shiftToCheck, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck));
+      Print("  - Bar (", shiftToCheck+1, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck+1));
       
-      // For testing, use a simple target level (current price + 100 points)
-      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) + 100 * _Point;
+      // Target level logic might need adjustment if based on bar 0
+      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) + 100 * _Point; // Example target based on current price
       ExecuteTrade(true, targetLevel);
       return true;
    }
    
-   // Check for bearish engulfing
-   if(IsEngulfing(0, false))
-   {
-      Print("Strategy 4 - Bearish engulfing detected");
-      Print("  - Current Price: ", iClose(_Symbol, PERIOD_CURRENT, 0));
-      Print("  - Previous Close: ", iClose(_Symbol, PERIOD_CURRENT, 1));
-      Print("  - Current Open: ", iOpen(_Symbol, PERIOD_CURRENT, 0));
-      Print("  - Previous Open: ", iOpen(_Symbol, PERIOD_CURRENT, 1));
+   // Check for bearish engulfing on the last closed bar
+   if(IsEngulfing(shiftToCheck, false))
+   {                             
+      Print("Strategy 4 - Bearish engulfing detected on bar ", shiftToCheck);
+      DrawEngulfingMarker(shiftToCheck, false); // Draw marker
+      Print("  - Bar (", shiftToCheck, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck));
+      Print("  - Bar (", shiftToCheck+1, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck+1));
       
-      // For testing, use a simple target level (current price - 100 points)
-      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) - 100 * _Point;
-      ExecuteTrade(false, targetLevel);
+      // Target level logic might need adjustment if based on bar 0
+      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) - 100 * _Point; // Example target based on current price
+      ExecuteTrade(false, targetLevel); 
       return true;
    }
    
@@ -964,6 +1005,10 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       Print("Stop loss adjusted due to minimum distance requirement. New SL: ", stopLoss);
    }
    
+   // Get current ask/bid for TP checks
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
    // Calculate take profit levels
    takeProfit1 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_1);
    takeProfit2 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_2);
@@ -972,35 +1017,74 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    Print("Initial Take Profit 2: ", takeProfit2);
    
    // Check if the TP is beyond the target level, adjust if necessary
-   if(isBuy)
+   if(targetLevel != 0) // Only adjust if a valid targetLevel was provided
    {
-      if(takeProfit1 > targetLevel)
+      if(isBuy)
       {
-         takeProfit1 = targetLevel - 5 * _Point;
-         Print("TP1 adjusted to stay below resistance level. New TP1: ", takeProfit1);
+         if(takeProfit1 > targetLevel)
+         {  // Don't place TP1 beyond the resistance
+            takeProfit1 = targetLevel - _Point; // Place slightly below resistance
+            Print("TP1 adjusted to stay below resistance level. New TP1: ", takeProfit1);
+         }
+            
+         if(takeProfit2 > targetLevel)
+         { // Don't place TP2 beyond the resistance
+            takeProfit2 = targetLevel; 
+            Print("TP2 adjusted to target resistance level. New TP2: ", takeProfit2);
+         }
       }
-         
-      if(takeProfit2 > targetLevel)
+      else // Sell
       {
-         takeProfit2 = targetLevel;
-         Print("TP2 adjusted to target resistance level. New TP2: ", takeProfit2);
-      }
-   }
-   else
-   {
-      if(takeProfit1 < targetLevel)
-      {
-         takeProfit1 = targetLevel + 5 * _Point;
-         Print("TP1 adjusted to stay above support level. New TP1: ", takeProfit1);
-      }
-         
-      if(takeProfit2 < targetLevel)
-      {
-         takeProfit2 = targetLevel;
-         Print("TP2 adjusted to target support level. New TP2: ", takeProfit2);
+         if(takeProfit1 < targetLevel)
+         { // Don't place TP1 beyond the support
+            takeProfit1 = targetLevel + _Point; // Place slightly above support
+            Print("TP1 adjusted to stay above support level. New TP1: ", takeProfit1);
+         }
+            
+         if(takeProfit2 < targetLevel)
+         { // Don't place TP2 beyond the support
+            takeProfit2 = targetLevel;
+            Print("TP2 adjusted to target support level. New TP2: ", takeProfit2);
+         }
       }
    }
    
+   // Ensure TPs respect minimum stop distance
+   if(isBuy)
+   {
+      double minTP1 = ask + minSLDistance;
+      double minTP2 = ask + minSLDistance;
+      if(takeProfit1 < minTP1)
+      {
+         Print("TP1 adjusted *up* to minimum distance. Old TP1: ", takeProfit1, ", New TP1: ", minTP1);
+         takeProfit1 = minTP1;
+      }
+      if(takeProfit2 < minTP2)
+      {
+          Print("TP2 adjusted *up* to minimum distance. Old TP2: ", takeProfit2, ", New TP2: ", minTP2);
+          takeProfit2 = minTP2;
+      }
+   }
+   else // Sell
+   {
+      double maxTP1 = bid - minSLDistance;
+      double maxTP2 = bid - minSLDistance;
+       if(takeProfit1 > maxTP1)
+      {
+         Print("TP1 adjusted *down* to minimum distance. Old TP1: ", takeProfit1, ", New TP1: ", maxTP1);
+         takeProfit1 = maxTP1;
+      }
+      if(takeProfit2 > maxTP2)
+      {
+          Print("TP2 adjusted *down* to minimum distance. Old TP2: ", takeProfit2, ", New TP2: ", maxTP2);
+          takeProfit2 = maxTP2;
+      }
+   }
+   
+   // Normalize final TP values
+   takeProfit1 = NormalizeDouble(takeProfit1, _Digits);
+   takeProfit2 = NormalizeDouble(takeProfit2, _Digits);
+
    Print("Final Trade Parameters:");
    Print("  - Direction: ", isBuy ? "BUY" : "SELL");
    Print("  - Entry Price: ", currentPrice);
@@ -1129,6 +1213,213 @@ double NormalizeVolume(double desiredVolume)
    normalizedVolume = MathMax(volMin, normalizedVolume);
    
    return normalizedVolume;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Trailing Stop for Strategy 5 Position                     |
+//+------------------------------------------------------------------+
+void ManageStrategy5Position()
+{
+   // Iterate through open positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         // Check if position belongs to this EA and Strategy 5
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+            PositionGetInteger(POSITION_MAGIC) == 654321)
+         {
+            long positionType = PositionGetInteger(POSITION_TYPE);
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double currentSL = PositionGetDouble(POSITION_SL);
+            double currentPrice = 0;
+            double newSL = 0;
+            bool isBuy = (positionType == POSITION_TYPE_BUY);
+            
+            double profitPips = 0;
+            double minStopDistPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            
+            // Calculate current profit in pips
+            if(isBuy)
+            {
+               currentPrice = bid; // Use Bid for Buy profit calculation
+               profitPips = (currentPrice - openPrice) / _Point;
+            }
+            else // Sell
+            {
+               currentPrice = ask; // Use Ask for Sell profit calculation
+               profitPips = (openPrice - currentPrice) / _Point;
+            }
+            
+            // Check if trailing stop activation threshold is met
+            if(profitPips < S5_Trail_Activation_Pips)
+            {
+               // Print("S5 Trail (Ticket: ", ticket, "): Activation not met (Profit: ", profitPips, " < ", S5_Trail_Activation_Pips, ")");
+               continue; // Not enough profit to activate trailing
+            }
+            
+            Print("S5 Trail (Ticket: ", ticket, "): Activation met (Profit: ", profitPips, " >= ", S5_Trail_Activation_Pips, ")");
+
+            // Calculate potential new Stop Loss based on trail distance
+            if(isBuy)
+            {               
+               newSL = currentPrice - S5_Trail_Pips * _Point;
+               // Ensure SL is at least breakeven (open price)
+               newSL = MathMax(newSL, openPrice);
+               // Ensure new SL respects minimum stops distance from Bid
+               newSL = MathMin(newSL, bid - minStopDistPoints);
+            }
+            else // Sell
+            {               
+               newSL = currentPrice + S5_Trail_Pips * _Point;
+               // Ensure SL is at least breakeven (open price)
+               newSL = MathMin(newSL, openPrice);
+               // Ensure new SL respects minimum stops distance from Ask
+               newSL = MathMax(newSL, ask + minStopDistPoints);
+            }
+            
+            // Normalize the calculated new SL
+            newSL = NormalizeDouble(newSL, _Digits);
+            
+            Print("S5 Trail (Ticket: ", ticket, "): Calculated New SL: ", newSL, " Current SL: ", currentSL);
+
+            // Check if the new SL is better (further in profit direction) than the current SL
+            bool shouldModify = false;
+            if(isBuy && newSL > currentSL)
+            {
+               shouldModify = true;
+            }
+            else if(!isBuy && newSL < currentSL)
+            {
+               shouldModify = true;
+            }
+            
+            if(shouldModify)
+            {
+               Print("S5 Trail (Ticket: ", ticket, "): Modifying SL from ", currentSL, " to ", newSL);
+               // Modify the position
+               MqlTradeRequest request = {};
+               MqlTradeResult result = {};
+               
+               request.action = TRADE_ACTION_SLTP;
+               request.position = ticket;
+               request.sl = newSL;
+               // request.tp = PositionGetDouble(POSITION_TP); // Keep original TP
+               
+               if(OrderSend(request, result))
+               {
+                  if(result.retcode == TRADE_RETCODE_DONE)
+                  {
+                     Print("S5 Trail (Ticket: ", ticket, "): Position SL modified successfully to ", newSL);
+                  }
+                  else
+                  {                     
+                     Print("S5 Trail (Ticket: ", ticket, "): Position modify failed. Retcode: ", result.retcode, " (", TradeRetcodeToString(result.retcode), ") Message: ", result.comment);
+                  }
+               }
+               else
+               {
+                   Print("S5 Trail (Ticket: ", ticket, "): OrderSend failed for SL modification. Error: ", GetLastError());
+               }
+            }
+            else
+            {
+               Print("S5 Trail (Ticket: ", ticket, "): New SL (", newSL, ") is not better than current SL (", currentSL, "). No modification needed.");
+            }
+            
+            // Only manage one S5 position per tick to avoid overwhelming the server
+            break; 
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Average Body Size (Ending at startIndex)              |
+//+------------------------------------------------------------------+
+double CalculateAverageBody(int period, int startIndex)
+{
+   if(period <= 0)
+   {
+      Print("Error: Average Body Period must be positive.");
+      return 0.0;
+   }
+   
+   double sum = 0;
+   int barsAvailable = Bars(_Symbol, PERIOD_CURRENT);
+   // Ensure startIndex is valid and we have enough bars for the period
+   if(startIndex < 0 || startIndex + period > barsAvailable)
+   {
+       Print("Error: Not enough bars available or invalid start index (", startIndex, ") for average body calculation of period ", period);
+       return 0.0;
+   }
+   
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   
+   // Copy 'period' bars ending at 'startIndex'
+   // MQL5 CopyRates: from start_pos (most recent), count
+   // To get bars ending *at* startIndex, we start copying from startIndex
+   if(CopyRates(_Symbol, PERIOD_CURRENT, startIndex, period, rates) != period)
+   {
+       Print("Error copying rates for Average Body calculation. Error: ", GetLastError());
+       return 0.0; // Return 0 or handle error appropriately
+   }
+
+   // Sum the body sizes of the copied bars
+   for(int i = 0; i < period; i++)
+   {
+      sum += MathAbs(rates[i].open - rates[i].close);
+   }
+   
+   // Avoid division by zero if period somehow ended up invalid
+   if(period == 0) return 0.0;
+   
+   return sum / period;
+}
+
+//+------------------------------------------------------------------+
+//| Draw an arrow marker for detected engulfing patterns             |
+//+------------------------------------------------------------------+
+void DrawEngulfingMarker(int barIndex, bool isBullish)
+{
+   datetime barTime = iTime(_Symbol, PERIOD_CURRENT, barIndex);
+   string objectName = "EngulfMarker_" + (string)barTime + "_" + (string)isBullish;
+   
+   double priceLevel = 0;
+   int arrowCode = 0;
+   color arrowColor = clrNONE;
+   
+   if(isBullish)
+   {
+      priceLevel = iLow(_Symbol, PERIOD_CURRENT, barIndex) - 2 * _Point * 10; // Place below low
+      arrowCode = 233; // Up arrow
+      arrowColor = clrDodgerBlue;
+   }
+   else // Bearish
+   {
+      priceLevel = iHigh(_Symbol, PERIOD_CURRENT, barIndex) + 2 * _Point * 10; // Place above high
+      arrowCode = 234; // Down arrow
+      arrowColor = clrRed;
+   }
+   
+   // Delete existing object with the same name first, if any (prevents duplicates)
+   ObjectDelete(0, objectName);
+
+   // Create the arrow object
+   if(!ObjectCreate(0, objectName, OBJ_ARROW, 0, barTime, priceLevel))
+   {
+      Print("Error creating engulfing marker object '", objectName, "': ", GetLastError());
+      return;
+   }
+   
+   // Set arrow properties
+   ObjectSetInteger(0, objectName, OBJPROP_ARROWCODE, arrowCode);
+   ObjectSetInteger(0, objectName, OBJPROP_COLOR, arrowColor);
+   ObjectSetInteger(0, objectName, OBJPROP_WIDTH, 1);
 }
 
 //+------------------------------------------------------------------+
