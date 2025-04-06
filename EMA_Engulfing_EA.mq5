@@ -22,8 +22,10 @@ input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strateg
 input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
 input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
-input int         SR_Lookback = 50;      // Lookback period for S/R detection
-input double      SR_Strength = 3;       // Minimum touches for valid S/R
+input int         SR_Lookback = 100;     // Lookback period for S/R detection
+input double      SR_Strength = 2;       // Minimum touches for valid S/R
+input double      SR_Tolerance = 0.1;    // Price tolerance for S/R detection in percentage
+input int         SR_MinBars = 3;        // Minimum bars between S/R levels
 
 // Global variables
 int emaHandle;
@@ -37,6 +39,20 @@ ulong posTicket2 = 0;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // Check if automated trading is allowed
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   {
+      Print("Automated trading is not allowed. Please enable it in MetaTrader 5.");
+      return(INIT_FAILED);
+   }
+   
+   // Check if trading is allowed for the symbol
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL)
+   {
+      Print("Trading is not allowed for ", _Symbol);
+      return(INIT_FAILED);
+   }
+   
    // Initialize EMA indicator
    emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
    
@@ -196,16 +212,106 @@ bool StayedOnSideOfEMA(int startBar, int bars, bool above)
 }
 
 //+------------------------------------------------------------------+
+//| Check if the bar is a resistance level                           |
+//+------------------------------------------------------------------+
+bool IsResistanceLevel(int barIndex, double strength)
+{
+   double high = iHigh(_Symbol, PERIOD_CURRENT, barIndex);
+   int count = 0;
+   
+   // Check if the high is a local maximum (relaxed condition)
+   bool isLocalMax = true;
+   for(int i = 1; i <= 3; i++)
+   {
+      if(barIndex + i < Bars(_Symbol, PERIOD_CURRENT) && 
+         barIndex - i >= 0)
+      {
+         if(high <= iHigh(_Symbol, PERIOD_CURRENT, barIndex + i) ||
+            high <= iHigh(_Symbol, PERIOD_CURRENT, barIndex - i))
+         {
+            isLocalMax = false;
+            break;
+         }
+      }
+   }
+   
+   if(isLocalMax)
+   {
+      // Count how many times price approached this level using percentage tolerance
+      for(int i = 0; i < SR_Lookback; i++)
+      {
+         if(i == barIndex) continue; // Skip the current bar
+         
+         double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
+         double tolerance = high * (SR_Tolerance / 100.0);
+         
+         if(MathAbs(barHigh - high) <= tolerance)
+            count++;
+      }
+   }
+   
+   return count >= strength;
+}
+
+//+------------------------------------------------------------------+
+//| Check if the bar is a support level                              |
+//+------------------------------------------------------------------+
+bool IsSupportLevel(int barIndex, double strength)
+{
+   double low = iLow(_Symbol, PERIOD_CURRENT, barIndex);
+   int count = 0;
+   
+   // Check if the low is a local minimum (relaxed condition)
+   bool isLocalMin = true;
+   for(int i = 1; i <= 3; i++)
+   {
+      if(barIndex + i < Bars(_Symbol, PERIOD_CURRENT) && 
+         barIndex - i >= 0)
+      {
+         if(low >= iLow(_Symbol, PERIOD_CURRENT, barIndex + i) ||
+            low >= iLow(_Symbol, PERIOD_CURRENT, barIndex - i))
+         {
+            isLocalMin = false;
+            break;
+         }
+      }
+   }
+   
+   if(isLocalMin)
+   {
+      // Count how many times price approached this level using percentage tolerance
+      for(int i = 0; i < SR_Lookback; i++)
+      {
+         if(i == barIndex) continue; // Skip the current bar
+         
+         double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
+         double tolerance = low * (SR_Tolerance / 100.0);
+         
+         if(MathAbs(barLow - low) <= tolerance)
+            count++;
+      }
+   }
+   
+   return count >= strength;
+}
+
+//+------------------------------------------------------------------+
 //| Find nearest support/resistance level                            |
 //+------------------------------------------------------------------+
 double FindNearestSR(bool findResistance)
 {
    double levels[];
    int levelCount = 0;
+   datetime lastLevelTime = 0;
    
    // Look for potential S/R points in the lookback period
    for(int i = 1; i < SR_Lookback - 1; i++)
    {
+      // Skip if too close to the last level
+      datetime currentTime = iTime(_Symbol, PERIOD_CURRENT, i);
+      if(lastLevelTime > 0 && (currentTime - lastLevelTime) < SR_MinBars * PeriodSeconds(PERIOD_CURRENT))
+         continue;
+      
       double high = iHigh(_Symbol, PERIOD_CURRENT, i);
       double low = iLow(_Symbol, PERIOD_CURRENT, i);
       
@@ -216,6 +322,7 @@ double FindNearestSR(bool findResistance)
             ArrayResize(levels, levelCount + 1);
             levels[levelCount] = high;
             levelCount++;
+            lastLevelTime = currentTime;
          }
       }
       else
@@ -225,6 +332,7 @@ double FindNearestSR(bool findResistance)
             ArrayResize(levels, levelCount + 1);
             levels[levelCount] = low;
             levelCount++;
+            lastLevelTime = currentTime;
          }
       }
    }
@@ -250,54 +358,6 @@ double FindNearestSR(bool findResistance)
    }
    
    return 0; // No level found
-}
-
-//+------------------------------------------------------------------+
-//| Check if the bar is a resistance level                           |
-//+------------------------------------------------------------------+
-bool IsResistanceLevel(int barIndex, double strength)
-{
-   double high = iHigh(_Symbol, PERIOD_CURRENT, barIndex);
-   int count = 0;
-   
-   // Check if the high is a local maximum
-   if(high > iHigh(_Symbol, PERIOD_CURRENT, barIndex + 1) && 
-      high > iHigh(_Symbol, PERIOD_CURRENT, barIndex - 1))
-   {
-      // Count how many times price approached this level
-      for(int i = 0; i < SR_Lookback; i++)
-      {
-         double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
-         if(MathAbs(barHigh - high) <= 10 * _Point)
-            count++;
-      }
-   }
-   
-   return count >= strength;
-}
-
-//+------------------------------------------------------------------+
-//| Check if the bar is a support level                              |
-//+------------------------------------------------------------------+
-bool IsSupportLevel(int barIndex, double strength)
-{
-   double low = iLow(_Symbol, PERIOD_CURRENT, barIndex);
-   int count = 0;
-   
-   // Check if the low is a local minimum
-   if(low < iLow(_Symbol, PERIOD_CURRENT, barIndex + 1) && 
-      low < iLow(_Symbol, PERIOD_CURRENT, barIndex - 1))
-   {
-      // Count how many times price approached this level
-      for(int i = 0; i < SR_Lookback; i++)
-      {
-         double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
-         if(MathAbs(barLow - low) <= 10 * _Point)
-            count++;
-      }
-   }
-   
-   return count >= strength;
 }
 
 //+------------------------------------------------------------------+
@@ -330,25 +390,47 @@ double CalculateTakeProfit(bool isBuy, double entryPrice, double stopLoss, doubl
 //+------------------------------------------------------------------+
 bool CheckStrategy1()
 {
+   Print("Checking Strategy 1 conditions...");
+   
    // Check for bullish setup
    if(CrossedEMA(1, true) && IsEngulfing(0, true) && StayedOnSideOfEMA(0, 3, true))
    {
+      Print("Strategy 1 - Bullish conditions met:");
+      Print("  - EMA crossed upward: ", CrossedEMA(1, true));
+      Print("  - Bullish engulfing: ", IsEngulfing(0, true));
+      Print("  - Price stayed above EMA: ", StayedOnSideOfEMA(0, 3, true));
+      
       double resistance = FindNearestSR(true);
       if(resistance > 0)
       {
+         Print("  - Found resistance level at: ", resistance);
          ExecuteTrade(true, resistance);
          return true;
+      }
+      else
+      {
+         Print("  - No valid resistance level found");
       }
    }
    
    // Check for bearish setup
    if(CrossedEMA(1, false) && IsEngulfing(0, false) && StayedOnSideOfEMA(0, 3, false))
    {
+      Print("Strategy 1 - Bearish conditions met:");
+      Print("  - EMA crossed downward: ", CrossedEMA(1, false));
+      Print("  - Bearish engulfing: ", IsEngulfing(0, false));
+      Print("  - Price stayed below EMA: ", StayedOnSideOfEMA(0, 3, false));
+      
       double support = FindNearestSR(false);
       if(support > 0)
       {
+         Print("  - Found support level at: ", support);
          ExecuteTrade(false, support);
          return true;
+      }
+      else
+      {
+         Print("  - No valid support level found");
       }
    }
    
@@ -360,15 +442,23 @@ bool CheckStrategy1()
 //+------------------------------------------------------------------+
 bool CheckStrategy2()
 {
+   Print("Checking Strategy 2 conditions...");
    double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
    
    // Find nearest support and resistance
    double resistance = FindNearestSR(true);
    double support = FindNearestSR(false);
    
+   Print("Strategy 2 - Current Price: ", currentPrice);
+   Print("Strategy 2 - Nearest Resistance: ", resistance);
+   Print("Strategy 2 - Nearest Support: ", support);
+   
    // Check for bullish engulfing near support
    if(support > 0 && MathAbs(currentPrice - support) < 20 * _Point && IsEngulfing(0, true))
    {
+      Print("Strategy 2 - Bullish conditions met:");
+      Print("  - Price near support: ", MathAbs(currentPrice - support), " points away");
+      Print("  - Bullish engulfing: ", IsEngulfing(0, true));
       ExecuteTrade(true, resistance);
       return true;
    }
@@ -376,6 +466,9 @@ bool CheckStrategy2()
    // Check for bearish engulfing near resistance
    if(resistance > 0 && MathAbs(currentPrice - resistance) < 20 * _Point && IsEngulfing(0, false))
    {
+      Print("Strategy 2 - Bearish conditions met:");
+      Print("  - Price near resistance: ", MathAbs(currentPrice - resistance), " points away");
+      Print("  - Bearish engulfing: ", IsEngulfing(0, false));
       ExecuteTrade(false, support);
       return true;
    }
@@ -388,31 +481,42 @@ bool CheckStrategy2()
 //+------------------------------------------------------------------+
 bool CheckStrategy3()
 {
+   Print("Checking Strategy 3 conditions...");
    double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
    
    // Find nearest resistance and support
    double resistance = FindNearestSR(true);
    double support = FindNearestSR(false);
    
+   Print("Strategy 3 - Current Price: ", currentPrice);
+   Print("Strategy 3 - Nearest Resistance: ", resistance);
+   Print("Strategy 3 - Nearest Support: ", support);
+   
    if(resistance == 0 || support == 0)
+   {
+      Print("Strategy 3 - No valid support/resistance levels found");
       return false;
+   }
    
    // Check for bullish engulfing pattern
    if(IsEngulfing(0, true))
    {
+      Print("Strategy 3 - Bullish engulfing detected");
       // Look for recently broken resistance levels (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
       {
          // Check if bar i broke through resistance
          if(BrokeLevel(i, resistance, true))
          {
+            Print("Strategy 3 - Resistance broken at bar ", i);
             // Check if price stayed on the right side of EMA
             if(StayedOnSideOfEMA(0, 3, true))
             {
+               Print("Strategy 3 - Price stayed above EMA");
                double newResistance = FindNearestSR(true);
                if(newResistance > 0 && newResistance > resistance)
                {
-                  Print("Strategy 3 - Bullish breakout detected at bar ", i, " with engulfing pattern");
+                  Print("Strategy 3 - New resistance found at: ", newResistance);
                   ExecuteTrade(true, newResistance);
                   return true;
                }
@@ -424,19 +528,22 @@ bool CheckStrategy3()
    // Check for bearish engulfing pattern
    if(IsEngulfing(0, false))
    {
+      Print("Strategy 3 - Bearish engulfing detected");
       // Look for recently broken support levels (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
       {
          // Check if bar i broke through support
          if(BrokeLevel(i, support, false))
          {
+            Print("Strategy 3 - Support broken at bar ", i);
             // Check if price stayed on the right side of EMA
             if(StayedOnSideOfEMA(0, 3, false))
             {
+               Print("Strategy 3 - Price stayed below EMA");
                double newSupport = FindNearestSR(false);
                if(newSupport > 0 && newSupport < support)
                {
-                  Print("Strategy 3 - Bearish breakout detected at bar ", i, " with engulfing pattern");
+                  Print("Strategy 3 - New support found at: ", newSupport);
                   ExecuteTrade(false, newSupport);
                   return true;
                }
@@ -453,6 +560,9 @@ bool CheckStrategy3()
 //+------------------------------------------------------------------+
 void ExecuteTrade(bool isBuy, double targetLevel)
 {
+   Print("Attempting to execute ", isBuy ? "BUY" : "SELL", " trade...");
+   Print("Target Level: ", targetLevel);
+   
    // Log current spread at time of trade execution (for information only)
    LogCurrentSpread();
    
@@ -460,6 +570,8 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    double stopLoss = 0;
    double takeProfit1 = 0;
    double takeProfit2 = 0;
+   
+   Print("Current Price: ", currentPrice);
    
    // Calculate stop loss based on the previous candle
    if(isBuy)
@@ -471,23 +583,28 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       stopLoss = iHigh(_Symbol, PERIOD_CURRENT, 1) + SL_Buffer_Pips * _Point;
    }
    
+   Print("Initial Stop Loss: ", stopLoss);
+   
    // Make sure the stop loss isn't too close to current price
    double minSLDistance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
    
    if(isBuy && (currentPrice - stopLoss) < minSLDistance)
    {
       stopLoss = currentPrice - minSLDistance;
-      Print("Stop loss adjusted due to minimum distance requirement");
+      Print("Stop loss adjusted due to minimum distance requirement. New SL: ", stopLoss);
    }
    else if(!isBuy && (stopLoss - currentPrice) < minSLDistance)
    {
       stopLoss = currentPrice + minSLDistance;
-      Print("Stop loss adjusted due to minimum distance requirement");
+      Print("Stop loss adjusted due to minimum distance requirement. New SL: ", stopLoss);
    }
    
    // Calculate take profit levels
    takeProfit1 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_1);
    takeProfit2 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_2);
+   
+   Print("Initial Take Profit 1: ", takeProfit1);
+   Print("Initial Take Profit 2: ", takeProfit2);
    
    // Check if the TP is beyond the target level, adjust if necessary
    if(isBuy)
@@ -495,13 +612,13 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       if(takeProfit1 > targetLevel)
       {
          takeProfit1 = targetLevel - 5 * _Point;
-         Print("TP1 adjusted to stay below resistance level");
+         Print("TP1 adjusted to stay below resistance level. New TP1: ", takeProfit1);
       }
          
       if(takeProfit2 > targetLevel)
       {
          takeProfit2 = targetLevel;
-         Print("TP2 adjusted to target resistance level");
+         Print("TP2 adjusted to target resistance level. New TP2: ", takeProfit2);
       }
    }
    else
@@ -509,15 +626,22 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       if(takeProfit1 < targetLevel)
       {
          takeProfit1 = targetLevel + 5 * _Point;
-         Print("TP1 adjusted to stay above support level");
+         Print("TP1 adjusted to stay above support level. New TP1: ", takeProfit1);
       }
          
       if(takeProfit2 < targetLevel)
       {
          takeProfit2 = targetLevel;
-         Print("TP2 adjusted to target support level");
+         Print("TP2 adjusted to target support level. New TP2: ", takeProfit2);
       }
    }
+   
+   Print("Final Trade Parameters:");
+   Print("  - Direction: ", isBuy ? "BUY" : "SELL");
+   Print("  - Entry Price: ", currentPrice);
+   Print("  - Stop Loss: ", stopLoss);
+   Print("  - Take Profit 1: ", takeProfit1);
+   Print("  - Take Profit 2: ", takeProfit2);
    
    // Place first order
    MqlTradeRequest request1 = {};
@@ -534,6 +658,8 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    request1.magic = 123456;
    request1.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP1";
    
+   Print("Sending first order...");
+   
    // Check return value of OrderSend
    bool orderSent1 = OrderSend(request1, result1);
    if(!orderSent1 || result1.retcode != TRADE_RETCODE_DONE)
@@ -547,6 +673,7 @@ void ExecuteTrade(bool isBuy, double targetLevel)
    if(result1.retcode == TRADE_RETCODE_DONE)
    {
       posTicket1 = result1.deal;
+      Print("First order executed successfully. Ticket: ", posTicket1);
       
       // Place second order
       MqlTradeRequest request2 = {};
@@ -563,6 +690,8 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       request2.magic = 123456;
       request2.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP2";
       
+      Print("Sending second order...");
+      
       // Check return value of OrderSend
       bool orderSent2 = OrderSend(request2, result2);
       if(!orderSent2 || result2.retcode != TRADE_RETCODE_DONE)
@@ -576,9 +705,16 @@ void ExecuteTrade(bool isBuy, double targetLevel)
       if(result2.retcode == TRADE_RETCODE_DONE)
       {
          posTicket2 = result2.deal;
+         Print("Second order executed successfully. Ticket: ", posTicket2);
          
          string direction = isBuy ? "BUY" : "SELL";
-         Print("Executed ", direction, " trades. SL at ", stopLoss, ", TP1 at ", takeProfit1, ", TP2 at ", takeProfit2);
+         Print("Both trades executed successfully:");
+         Print("  - Direction: ", direction);
+         Print("  - First Ticket: ", posTicket1);
+         Print("  - Second Ticket: ", posTicket2);
+         Print("  - Stop Loss: ", stopLoss);
+         Print("  - Take Profit 1: ", takeProfit1);
+         Print("  - Take Profit 2: ", takeProfit2);
       }
       else
       {
