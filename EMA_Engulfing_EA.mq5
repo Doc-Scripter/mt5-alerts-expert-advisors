@@ -21,10 +21,11 @@ input int         Max_Spread = 180;      // Maximum spread for logging purposes 
 input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strategy
 input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
+input bool        Use_Strategy_4 = true; // Use simple engulfing strategy
 input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
-input int         SR_Lookback = 100;     // Lookback period for S/R detection
-input double      SR_Strength = 2;       // Minimum touches for valid S/R
-input double      SR_Tolerance = 0.1;    // Price tolerance for S/R detection in percentage
+input int         SR_Lookback = 50;       // Number of candles to look back for S/R levels
+input int         SR_Strength = 3;        // Minimum number of touches for S/R level
+input double      SR_Tolerance = 0.0005;   // Tolerance for S/R level detection
 input int         SR_MinBars = 3;        // Minimum bars between S/R levels
 
 // Global variables
@@ -117,6 +118,9 @@ void OnTick()
       
    if(Use_Strategy_3 && CheckStrategy3())
       return;
+      
+   if(Use_Strategy_4 && CheckStrategy4())
+      return;
 }
 
 //+------------------------------------------------------------------+
@@ -162,19 +166,74 @@ bool IsEngulfing(int shift, bool bullish)
    double open2 = iOpen(_Symbol, PERIOD_CURRENT, shift);
    double close2 = iClose(_Symbol, PERIOD_CURRENT, shift);
    
+   // Calculate price range for tolerance
+   double range = MathAbs(open1 - close1);
+   double tolerance = range * 0.2; // Increased to 20% of the previous candle's range
+   
+   // Add minimum tolerance to handle small ranges
+   double minTolerance = 5 * _Point;
+   tolerance = MathMax(tolerance, minTolerance);
+   
+   Print("Analyzing candles for engulfing pattern:");
+   Print("  - Current Bar (", shift, "): Open=", open2, " Close=", close2);
+   Print("  - Previous Bar (", shift + 1, "): Open=", open1, " Close=", close1);
+   Print("  - Tolerance: ", tolerance);
+   
    if(bullish) // Bullish engulfing
    {
-      return (open1 > close1) && // Prior candle is bearish
-             (open2 < close2) && // Current candle is bullish
-             (open2 <= close1) && // Current open is below or equal to prior close
-             (close2 > open1);    // Current close is above prior open
+      // More lenient condition for prior candle being bearish
+      bool condition1 = (close1 <= open1 + tolerance); // Prior candle is bearish or doji
+      bool condition2 = (close2 >= open2 - tolerance); // Current candle is bullish or doji
+      bool condition3 = (open2 <= close1 + tolerance); // Current open is below or equal to prior close
+      bool condition4 = (close2 > open1 - tolerance); // Current close is above prior open
+      
+      Print("Checking Bullish Engulfing Conditions:");
+      Print("  - Prior Candle Bearish/Doji: ", condition1, " (Close: ", close1, " <= Open: ", open1 + tolerance, ")");
+      Print("  - Current Candle Bullish/Doji: ", condition2, " (Close: ", close2, " >= Open: ", open2 - tolerance, ")");
+      Print("  - Current Open <= Prior Close: ", condition3, " (", open2, " <= ", close1 + tolerance, ")");
+      Print("  - Current Close > Prior Open: ", condition4, " (", close2, " > ", open1 - tolerance, ")");
+      
+      bool isEngulfing = condition1 && condition2 && condition3 && condition4;
+      Print("  - All Conditions Met: ", isEngulfing);
+      
+      if(!isEngulfing)
+      {
+         Print("  - Failed Conditions:");
+         if(!condition1) Print("    * Prior candle is not bearish or doji");
+         if(!condition2) Print("    * Current candle is not bullish or doji");
+         if(!condition3) Print("    * Current open is not below or equal to prior close");
+         if(!condition4) Print("    * Current close is not above prior open");
+      }
+      
+      return isEngulfing;
    }
    else // Bearish engulfing
    {
-      return (open1 < close1) && // Prior candle is bullish
-             (open2 > close2) && // Current candle is bearish
-             (open2 >= close1) && // Current open is above or equal to prior close
-             (close2 < open1);    // Current close is below prior open
+      // More lenient condition for prior candle being bullish
+      bool condition1 = (close1 >= open1 - tolerance); // Prior candle is bullish or doji
+      bool condition2 = (close2 <= open2 + tolerance); // Current candle is bearish or doji
+      bool condition3 = (open2 >= close1 - tolerance); // Current open is above or equal to prior close
+      bool condition4 = (close2 < open1 + tolerance); // Current close is below prior open
+      
+      Print("Checking Bearish Engulfing Conditions:");
+      Print("  - Prior Candle Bullish/Doji: ", condition1, " (Close: ", close1, " >= Open: ", open1 - tolerance, ")");
+      Print("  - Current Candle Bearish/Doji: ", condition2, " (Close: ", close2, " <= Open: ", open2 + tolerance, ")");
+      Print("  - Current Open >= Prior Close: ", condition3, " (", open2, " >= ", close1 - tolerance, ")");
+      Print("  - Current Close < Prior Open: ", condition4, " (", close2, " < ", open1 + tolerance, ")");
+      
+      bool isEngulfing = condition1 && condition2 && condition3 && condition4;
+      Print("  - All Conditions Met: ", isEngulfing);
+      
+      if(!isEngulfing)
+      {
+         Print("  - Failed Conditions:");
+         if(!condition1) Print("    * Prior candle is not bullish or doji");
+         if(!condition2) Print("    * Current candle is not bearish or doji");
+         if(!condition3) Print("    * Current open is not above or equal to prior close");
+         if(!condition4) Print("    * Current close is not below prior open");
+      }
+      
+      return isEngulfing;
    }
 }
 
@@ -550,6 +609,46 @@ bool CheckStrategy3()
             }
          }
       }
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Strategy 4: Simple engulfing pattern                             |
+//+------------------------------------------------------------------+
+bool CheckStrategy4()
+{
+   Print("Checking Strategy 4 conditions...");
+   
+   // Check for bullish engulfing
+   if(IsEngulfing(0, true))
+   {
+      Print("Strategy 4 - Bullish engulfing detected");
+      Print("  - Current Price: ", iClose(_Symbol, PERIOD_CURRENT, 0));
+      Print("  - Previous Close: ", iClose(_Symbol, PERIOD_CURRENT, 1));
+      Print("  - Current Open: ", iOpen(_Symbol, PERIOD_CURRENT, 0));
+      Print("  - Previous Open: ", iOpen(_Symbol, PERIOD_CURRENT, 1));
+      
+      // For testing, use a simple target level (current price + 100 points)
+      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) + 100 * _Point;
+      ExecuteTrade(true, targetLevel);
+      return true;
+   }
+   
+   // Check for bearish engulfing
+   if(IsEngulfing(0, false))
+   {
+      Print("Strategy 4 - Bearish engulfing detected");
+      Print("  - Current Price: ", iClose(_Symbol, PERIOD_CURRENT, 0));
+      Print("  - Previous Close: ", iClose(_Symbol, PERIOD_CURRENT, 1));
+      Print("  - Current Open: ", iOpen(_Symbol, PERIOD_CURRENT, 0));
+      Print("  - Previous Open: ", iOpen(_Symbol, PERIOD_CURRENT, 1));
+      
+      // For testing, use a simple target level (current price - 100 points)
+      double targetLevel = iClose(_Symbol, PERIOD_CURRENT, 0) - 100 * _Point;
+      ExecuteTrade(false, targetLevel);
+      return true;
    }
    
    return false;
