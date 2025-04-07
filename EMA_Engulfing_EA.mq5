@@ -9,7 +9,7 @@
 #property strict
 
 // Include spread check functionality
-#include "include/SpreadCheck.mqh"
+// #include "include/SpreadCheck.mqh" // REMOVED
 
 // Trend States
 #define TREND_BULLISH 1
@@ -61,40 +61,32 @@ input int         EMA_Period = 20;       // EMA period
 input double      Lot_Size_1 = 1;     // First entry lot size (used if LotSizing_Mode=DYNAMIC_MARGIN_CHECK)
 input double      Lot_Size_2 = 0.5;     // Second entry lot size
 input double      RR_Ratio = 1.5;           // Risk/Reward Ratio for Take Profit (Consolidated)
-input int         Max_Spread = 180;      // Maximum spread for logging purposes only
+// input int         Max_Spread = 180;      // REMOVED: Maximum spread for logging purposes only
 input ENUM_LOT_SIZING_MODE LotSizing_Mode = DYNAMIC_MARGIN_CHECK; // Lot sizing strategy
-input int         Strategy_Cooldown_Minutes = 60; // Cooldown in minutes before same strategy can trade again
+// input int         Strategy_Cooldown_Minutes = 60; // REMOVED: Cooldown in minutes before same strategy can trade again
 input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strategy
-input bool        Use_Strategy_2 = false; // Use S/R engulfing strategy
-input bool        Use_Strategy_3 = false; // Use breakout + EMA engulfing strategy
+input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
+input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
 input bool        Use_Strategy_4 = false; // Use simple engulfing strategy
 input bool        Use_Strategy_5 = false;  // Use simple movement strategy (for testing)
 input bool        Engulfing_Use_Trend_Filter = false; // ENABLED BY DEFAULT: Use MA trend filter in IsEngulfing
-input int         SL_Buffer_Pips = 10;    // Buffer in pips for Stop Loss
 input int         SR_Lookback = 10;       // Number of candles to look back for S/R zones
-input int         SR_Sensitivity_Pips = 5;    // Min distance between S/R zone defining closes
+input int         SR_Sensitivity_Pips = 3;    // Min distance between S/R zone defining closes (RELAXED to 3)
 input double      SL_Fallback_Pips = 15;   // SL distance in pips when zone boundary is not used (Increased default further)
-input int         SR_Min_Touches = 2;       // Minimum touches required for a zone to be tradable
+input int         SR_Min_Touches = 1;       // Minimum touches required for a zone to be tradable (RELAXED to 1)
+input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven for Strats 1-3 (0=disabled)
+input bool        Use_Breakeven_Logic = true; // NEW: Enable/Disable automatic breakeven adjustment in OnTimer
 
 // Trend Filter Inputs
-input bool        Use_Trend_Filter = true;   // Enable/Disable the main Trend Filter
-input int         Trend_FastEMA = 20;        // Fast EMA period for Trend Filter
-input int         Trend_SlowEMA = 100;       // Slow EMA period for Trend Filter
-input int         Trend_ADXPeriod = 14;       // ADX period for Trend Filter
-input double      Trend_ADXThreshold = 20.0; // ADX threshold for trend confirmation
-
-// Breakeven Inputs
-input int         BreakevenTriggerPips = 15;  // Pips profit to trigger breakeven
-input int         BreakevenBufferPips = 1;    // Pips buffer above/below breakeven
+input bool        Use_Trend_Filter = false;   // Enable/Disable the main Trend Filter // CHANGED DEFAULT TO FALSE
 
 // Strategy 5 Inputs
 input double      S5_Lot_Size = 1;    // Lot size for Strategy 5 (used if LotSizing_Mode=DYNAMIC_MARGIN_CHECK)
 input int         S5_Min_Body_Pips = 1; // Minimum candle body size in pips for Strategy 5
 input int         S5_TP_Pips = 10;      // Take Profit distance in pips for Strategy 5 (Increased Default)
-input bool        S5_Use_Trailing_Stop = true; // Enable trailing stop for Strategy 5
 input bool        S5_DisableTP = true;     // Disable take profit, only use trailing stop
-input int         S5_Trail_Pips = 1;       // Trailing stop distance in pips (Very close)
-input int         S5_Trail_Activation_Pips = 1; // Pips in profit to activate trailing stop (Quick activation)
+input int         S5_Trail_Activation_Pips = 10; // Pips in profit to activate trailing stop for S5
+input int         S5_Trail_Pips = 5;         // Trailing stop distance in pips for S5
 
 // Global variables
 int emaHandle;
@@ -113,6 +105,10 @@ SRZone g_activeSupportZones[];
 SRZone g_activeResistanceZones[]; 
 int    g_nearestSupportZoneIndex = -1;  
 int    g_nearestResistanceZoneIndex = -1; 
+
+// Strategy 1 Active SL Levels (for S/R based cooldown)
+double g_strat1_active_buy_sl_level = 0.0;
+double g_strat1_active_sell_sl_level = 0.0;
 
 // Trend Filter Handles & Buffers
 int trendFastEmaHandle;
@@ -195,16 +191,19 @@ int OnInit()
    PrintFormat("Broker Info: Min Stops Level = %d points (%.*f price distance)", 
                stopsLevel, _Digits, stopsLevel * _Point);
    
-   // Initialize trend filter indicators
-   trendFastEmaHandle = iMA(_Symbol, PERIOD_CURRENT, Trend_FastEMA, 0, MODE_EMA, PRICE_CLOSE);
-   trendSlowEmaHandle = iMA(_Symbol, PERIOD_CURRENT, Trend_SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
-   trendAdxHandle = iADX(_Symbol, PERIOD_CURRENT, Trend_ADXPeriod);
+   // Initialize trend filter indicators with hardcoded periods (Fast=20, Slow=50)
+   trendFastEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 20, 0, MODE_EMA, PRICE_CLOSE);
+   trendSlowEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 50, 0, MODE_EMA, PRICE_CLOSE);
+   trendAdxHandle = iADX(_Symbol, PERIOD_CURRENT, 14); // Hardcoded ADX period = 14
    
    if(trendFastEmaHandle == INVALID_HANDLE || trendSlowEmaHandle == INVALID_HANDLE || trendAdxHandle == INVALID_HANDLE)
    {
       Print("Failed to create trend filter indicator handles");
       return(INIT_FAILED);
    }
+   
+   // Start the timer for breakeven checks (runs every second)
+   EventSetTimer(1);
    
    return(INIT_SUCCEEDED);
 }
@@ -250,8 +249,6 @@ void OnTick()
    int currentBars = Bars(_Symbol, PERIOD_CURRENT);
    if(currentBars == barCount)
    {  // No new bar, check for trailing stop management
-      if(S5_Use_Trailing_Stop)
-         ManageStrategy5Position();
       return; 
    }   
       
@@ -262,7 +259,7 @@ void OnTick()
       return;
       
    // Log current spread for reference (but don't use it to limit trading)
-   IsSpreadAcceptable(Max_Spread);
+   // IsSpreadAcceptable(Max_Spread); // REMOVED
    
    // Update and Draw Valid S/R Zones (NEW - Call this once per bar)
    UpdateAndDrawValidSRZones();
@@ -287,8 +284,6 @@ void OnTick()
       return;
       
    // If no trade was executed, ensure trailing stop is still managed on new bar
-   if(S5_Use_Trailing_Stop)
-      ManageStrategy5Position();
 }
 
 //+------------------------------------------------------------------+
@@ -483,68 +478,148 @@ double CalculateTakeProfit(bool isBuy, double entryPrice, double stopLoss, doubl
 }
 
 //+------------------------------------------------------------------+
-//| Strategy 1: EMA Crossover (Checks last closed bar)               |
+//| Strategy 1: EMA Crossover (Checks last closed bar, confirms on current) |
 //+------------------------------------------------------------------+
 bool CheckStrategy1()
 {
    // Check cooldown first
    if (IsStrategyOnCooldown(1, MAGIC_STRAT_1))
       return false;
-   
-   Print("Checking Strategy 1 conditions...");
-   
-   // Check crossover on the last closed bar (index 1)
-   int shiftToCheck = 1;
-   // Use pre-calculated emaValues array (indices 1 and 2 needed)
-   if (ArraySize(emaValues) < 3) 
-   { 
-      Print("CheckStrategy1 Error: Not enough EMA values calculated."); 
-      return false; 
-   }
-   double emaCurrent = emaValues[shiftToCheck];     // EMA for bar 1
-   double emaPrevious = emaValues[shiftToCheck + 1]; // EMA for bar 2
-   double closeCurrent = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);    // Close for bar 1
-   double closePrevious = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1); // Close for bar 2
 
-   // Check for bullish crossover
-   if(emaCurrent > emaPrevious && closeCurrent > emaCurrent && closePrevious <= emaPrevious)
+   Print("Checking Strategy 1 conditions (Refined)...");
+
+   // --- Check Required Data ---
+   // Need EMA values for bar 0, 1, 2 and Close prices for 0, 1, 2
+   if (ArraySize(emaValues) < 3)
    {
-      Print("Strategy 1 - Bullish EMA Crossover detected");
-      // Target: Nearest resistance zone top. SL: Nearest support zone bottom.
-      if(g_nearestResistanceZoneIndex != -1 && g_nearestSupportZoneIndex != -1) 
+      Print("CheckStrategy1 Error: Not enough EMA values calculated.");
+      return false;
+   }
+   MqlRates rates[3]; // Need bars 0, 1, 2
+   if(CopyRates(_Symbol, PERIOD_CURRENT, 0, 3, rates) < 3)
+   {
+      Print("CheckStrategy1 Error: Could not copy rates.");
+      return false;
+   }
+
+   double ema0 = emaValues[0];
+   double ema1 = emaValues[1];
+   double ema2 = emaValues[2];
+   double close0 = rates[0].close;
+   double close1 = rates[1].close;
+   double close2 = rates[2].close;
+   // Added for new logic
+   double open0 = rates[0].open;
+   double open1 = rates[1].open;
+   double low1 = rates[1].low;
+   double high1 = rates[1].high;
+
+   // --- Trend Filter Check ---
+   int currentTrend = GetTrendState();
+   string trendStr = TrendStateToString(currentTrend);
+
+   // --- Check Bullish Crossover & Confirmation (Modified Logic) ---
+   // Crossover check: low of bar 1 below/at EMA, close of bar 1 above EMA
+   bool bullishCrossover = (low1 <= ema1 && close1 > ema1);
+   bool bullishEngulfing = IsEngulfing(1, true); // Check engulfing on the crossover bar
+
+   if (bullishCrossover)
+   {
+      PrintFormat("Strategy 1: Bullish EMA Crossover on Bar 1. Engulfing on Bar 1? %s", (bullishEngulfing ? "Yes" : "No"));
+      if (bullishEngulfing) DrawEngulfingMarker(1, true); // <<< DRAW MARKER on detection
+      if (bullishEngulfing) // Check only for crossover and engulfing
       {
-          double resistanceTop = g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary;
-          double supportBottomForSL = g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary;
-          PrintFormat("  - Target Resistance Top: %.5f, SL Support Bottom: %.5f", resistanceTop, supportBottomForSL);
-          ExecuteTrade(1, MAGIC_STRAT_1, true, resistanceTop, supportBottomForSL); // Pass strat#, magic#, side, target, sl_level
-          return true;
+         // Check Trend Filter if enabled
+         if (Use_Trend_Filter && currentTrend != TREND_BULLISH)
+         {
+            PrintFormat("Strategy 1: Bullish signal ignored - Trend Filter (%s) is not Bullish.", trendStr);
+            return false; // Filtered by trend
+         }
+         // Trend OK or Filter Disabled
+         // Confirmation check: Not both open and close of bar 0 are below EMA
+         if (!(open0 < ema0 && close0 < ema0))
+         {
+            PrintFormat("Strategy 1: Bullish Confirmation on Bar 0 (Not both O[0]=%.5f & C[0]=%.5f < EMA[0]=%.5f)", open0, close0, ema0);
+            // Check for nearest SUPPORT zone
+            if (g_nearestSupportZoneIndex != -1)
+            {
+               SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
+
+               // Check S/R Level Cooldown
+               if (g_strat1_active_buy_sl_level != 0.0 && MathAbs(nearestSupport.bottomBoundary - g_strat1_active_buy_sl_level) < _Point)
+               {
+                   PrintFormat("Strategy 1 skipped: Active BUY trade from same support level (%.5f) exists.", g_strat1_active_buy_sl_level);
+                   return false;
+               }
+
+               PrintFormat("Strategy 1: Nearest Support found (Bottom=%.5f). Triggering BUY.", nearestSupport.bottomBoundary);
+               ExecuteTradeStrategy1(true, nearestSupport.bottomBoundary); // Pass BUY signal and support bottom for SL calc
+               return true; // Trade attempted
+            }
+            else
+            {
+               Print("Strategy 1: Bullish signal ignored - No nearest support zone found.");
+            }
+         }
       }
       else
       {
-          Print("  - Required S/R zone for Target or SL not found (Resistance Index: ", g_nearestResistanceZoneIndex, ", Support Index: ", g_nearestSupportZoneIndex, ")");
+         PrintFormat("Strategy 1: Bullish Crossover ignored - Engulfing failed on Bar 1"); // Simplified message
       }
    }
-   
-   // Check for bearish crossover
-   if(emaCurrent < emaPrevious && closeCurrent < emaCurrent && closePrevious >= emaPrevious)
+
+   // --- Check Bearish Crossover & Confirmation (Modified Logic) ---
+   // Crossover check: high of bar 1 above/at EMA, close of bar 1 below EMA
+   bool bearishCrossover = (high1 >= ema1 && close1 < ema1);
+   bool bearishEngulfing = IsEngulfing(1, false); // Check engulfing on the crossover bar
+
+   if (bearishCrossover)
    {
-      Print("Strategy 1 - Bearish EMA Crossover detected");
-      // Target: Nearest support zone bottom. SL: Nearest resistance zone top.
-      if(g_nearestSupportZoneIndex != -1 && g_nearestResistanceZoneIndex != -1)
+      PrintFormat("Strategy 1: Bearish EMA Crossover on Bar 1. Engulfing on Bar 1? %s", (bearishEngulfing ? "Yes" : "No"));
+      if (bearishEngulfing) DrawEngulfingMarker(1, false); // <<< DRAW MARKER on detection
+      if (bearishEngulfing) // Check only for crossover and engulfing
       {
-          double supportBottom = g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary;
-          double resistanceTopForSL = g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary;
-          PrintFormat("  - Target Support Bottom: %.5f, SL Resistance Top: %.5f", supportBottom, resistanceTopForSL);
-          ExecuteTrade(1, MAGIC_STRAT_1, false, supportBottom, resistanceTopForSL); 
-          return true;
+         // Check Trend Filter if enabled
+         if (Use_Trend_Filter && currentTrend != TREND_BEARISH)
+         {
+            PrintFormat("Strategy 1: Bearish signal ignored - Trend Filter (%s) is not Bearish.", trendStr);
+            return false; // Filtered by trend
+         }
+         // Trend OK or Filter Disabled
+         // Confirmation check: Not both open and close of bar 0 are above EMA
+         if (!(open0 > ema0 && close0 > ema0))
+         {
+            PrintFormat("Strategy 1: Bearish Confirmation on Bar 0 (Not both O[0]=%.5f & C[0]=%.5f > EMA[0]=%.5f)", open0, close0, ema0);
+            // Check for nearest RESISTANCE zone
+            if (g_nearestResistanceZoneIndex != -1)
+            {
+               SRZone nearestResistance = g_activeResistanceZones[g_nearestResistanceZoneIndex];
+
+               // Check S/R Level Cooldown
+               if (g_strat1_active_sell_sl_level != 0.0 && MathAbs(nearestResistance.topBoundary - g_strat1_active_sell_sl_level) < _Point)
+               {
+                   PrintFormat("Strategy 1 skipped: Active SELL trade from same resistance level (%.5f) exists.", g_strat1_active_sell_sl_level);
+                   return false;
+               }
+
+               PrintFormat("Strategy 1: Nearest Resistance found (Top=%.5f). Triggering SELL.", nearestResistance.topBoundary);
+               ExecuteTradeStrategy1(false, nearestResistance.topBoundary); // Pass SELL signal and resistance top for SL calc
+               return true; // Trade attempted
+            }
+            else
+            {
+               Print("Strategy 1: Bearish signal ignored - No nearest resistance zone found.");
+            }
+         }
       }
       else
       {
-          Print("  - Required S/R zone for Target or SL not found (Support Index: ", g_nearestSupportZoneIndex, ", Resistance Index: ", g_nearestResistanceZoneIndex, ")");
+         PrintFormat("Strategy 1: Bearish Crossover ignored - Engulfing failed on Bar 1"); // Simplified message
       }
    }
-   
-   return false;
+
+   // Print("Strategy 1: No valid trade conditions met."); // Optional: uncomment for verbose logging when no trade
+   return false; // No trade triggered
 }
 
 //+------------------------------------------------------------------+
@@ -559,18 +634,18 @@ bool CheckStrategy2()
    Print("Checking Strategy 2 conditions...");
    int shiftToCheck = 1; // Check the last completed bar
    
-   // --- Check and Mark Engulfing Pattern First --- 
+   // --- Check and Mark Engulfing Pattern First ---
    bool isBullishEngulfing = IsEngulfing(shiftToCheck, true);
-   bool isBearishEngulfing = false; 
+   bool isBearishEngulfing = false;
    if (!isBullishEngulfing) // Only check bearish if not bullish
-   { 
+   {
        isBearishEngulfing = IsEngulfing(shiftToCheck, false);
    }
-   
+
    // Draw marker if any engulfing pattern was found
    if (isBullishEngulfing)
    {
-       DrawEngulfingMarker(shiftToCheck, true); 
+       DrawEngulfingMarker(shiftToCheck, true);
        Print("Strategy 2 - Potential Bullish Engulfing Marked on bar ", shiftToCheck);
    }
    else if (isBearishEngulfing)
@@ -579,208 +654,179 @@ bool CheckStrategy2()
        Print("Strategy 2 - Potential Bearish Engulfing Marked on bar ", shiftToCheck);
    }
    // --------------------------------------------------
-   
+
    // Get prices for the completed bar (index 1) for S/R check
    double closePriceBar1 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);
-   if (closePriceBar1 == 0) 
-   {   
+   if (closePriceBar1 == 0)
+   {
        Print("Strategy 2 Error: Could not get close price for bar ", shiftToCheck);
        return false; // Error getting price
    }
 
    // Nearest support/resistance zones are now found in UpdateAndDrawValidSRZones()
    // We use the global indices g_nearestSupportZoneIndex and g_nearestResistanceZoneIndex
-   
+
    Print("Strategy 2 - Price (Bar ", shiftToCheck, "): ", closePriceBar1);
    Print("Strategy 2 - Nearest Resistance Zone Index: ", g_nearestResistanceZoneIndex);
    Print("Strategy 2 - Nearest Support Zone Index: ", g_nearestSupportZoneIndex);
-   
-   // --- Now check for TRADE conditions --- 
-   
+
+   // --- Trend Filter Check ---
+   int currentTrend = GetTrendState();
+   string trendStr = TrendStateToString(currentTrend);
+
+   // --- Now check for TRADE conditions ---
+
    // Get Open and Close of the engulfing candle (shiftToCheck = 1)
    double openEngulfing = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck);
    double closeEngulfing = closePriceBar1; // We already have this
-   
+
+   // --- New Retest Logic ---
+   int lookbackPeriodForEMACross = 3; // How many bars before engulfing to check for EMA cross
+
    // Condition: Bullish engulfing AND candle is retesting support zone
    if(isBullishEngulfing && g_nearestSupportZoneIndex != -1) // Check if a nearest zone exists
    {
       SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
-      double emaEngulfing = emaValues[shiftToCheck]; // EMA value for the engulfing candle bar
-      
-      // Get data for the engulfing candle and surrounding candles
-      double open1 = openEngulfing;
-      double close1 = closeEngulfing;
-      double low1 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck);
-      double high1 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck);
-      
-      // Get previous candle data
-      double open2 = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      double close2 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      double low2 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      
-      // Comprehensive retest detection - check all possible ways a candle can interact with the zone
-      
-      // 1. Check if the candle body is inside the zone
-      bool bodyInZone = (open1 >= nearestSupport.bottomBoundary && open1 <= nearestSupport.topBoundary) || 
-                        (close1 >= nearestSupport.bottomBoundary && close1 <= nearestSupport.topBoundary);
-      
-      // 2. Check if the candle body crosses/touches the zone
-      bool bodyTouchingZone = (open1 <= nearestSupport.topBoundary && close1 >= nearestSupport.bottomBoundary) ||
-                              (close1 <= nearestSupport.topBoundary && open1 >= nearestSupport.bottomBoundary);
-      
-      // 3. Check if the candle wick is inside the zone
-      bool wickInZone = (low1 >= nearestSupport.bottomBoundary && low1 <= nearestSupport.topBoundary);
-      
-      // 4. Check if the candle wick penetrates through the zone
-      bool wickThroughZone = (low1 < nearestSupport.bottomBoundary && (open1 > nearestSupport.topBoundary || close1 > nearestSupport.topBoundary));
-      
-      // Combined retest condition - any interaction with the zone is considered a valid retest
-      bool isValidRetest = bodyInZone || bodyTouchingZone || wickInZone || wickThroughZone;
-      
-      // For debugging
-      if(isValidRetest) {
-         PrintFormat("Valid bullish retest detected: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s",
-                    (bodyInZone ? "true" : "false"),
-                    (bodyTouchingZone ? "true" : "false"),
-                    (wickInZone ? "true" : "false"),
-                    (wickThroughZone ? "true" : "false"));
-      }
-      
-      // Check Zone Touches, Valid Retest, and Price vs EMA
-      // Note: We're making the EMA condition optional by commenting it out
-      if (nearestSupport.touchCount >= SR_Min_Touches && 
-          isValidRetest) // && closeEngulfing > emaEngulfing)
+
+      // 1. Check if engulfing candle close is within the support zone boundaries
+      bool engulfingCloseInZone = (closeEngulfing >= nearestSupport.bottomBoundary && closeEngulfing <= nearestSupport.topBoundary);
+
+      // 2. Check if price closed below EMA recently (before engulfing)
+      bool priceBelowEMARecently = false;
+      for (int i = shiftToCheck + 1; i <= shiftToCheck + lookbackPeriodForEMACross; i++)
       {
-         Print("Strategy 2 - TRADE Trigger: Bullish conditions met:");
-         PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestSupport.touchCount, SR_Min_Touches);
-         
-         if(bodyInZone) PrintFormat("  - Candle body inside support zone");
-         else if(bodyTouchingZone) PrintFormat("  - Candle body touching support zone");
-         else if(wickInZone) PrintFormat("  - Candle wick inside support zone");
-         else if(wickThroughZone) PrintFormat("  - Candle wick penetrating through support zone");
-         
-         PrintFormat("  - Bullish Engulfing Close (%.5f) vs EMA (%.5f)", closeEngulfing, emaEngulfing);
-         PrintFormat("  - Support Zone: Top=%.5f, Bottom=%.5f", nearestSupport.topBoundary, nearestSupport.bottomBoundary);
-         PrintFormat("  - Engulfing Pattern: Current (O=%.5f, C=%.5f), Previous (O=%.5f, C=%.5f)", 
-                    open1, close1, open2, close2);
-         
-         // Target the top of the nearest resistance zone, if one exists
-         double targetResistanceTop = (g_nearestResistanceZoneIndex != -1) ? g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary : 0.0;
-         Print("  - Targeting Resistance Zone Top: ", targetResistanceTop);
-         ExecuteTrade(2, MAGIC_STRAT_2, true, targetResistanceTop, nearestSupport.definingBodyLow); // Pass strat#, magic#, side, target, sl_level
-         return true; // Trade executed
-   }
-   else
-   {
-         PrintFormat("Strategy 2 - Bullish Engulfing signal ignored. Touches (%d<%d): %s, Valid Retest: %s, Price/EMA: %s", 
-                     nearestSupport.touchCount, SR_Min_Touches,
-                     (nearestSupport.touchCount >= SR_Min_Touches ? "true" : "false"),
-                     (isValidRetest ? "true" : "false"), 
-                     (closeEngulfing > emaEngulfing ? "true" : "false"));
-         
-         if(!isValidRetest) {
-            PrintFormat("  - Debug: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s", 
-                       (bodyInZone ? "true" : "false"),
-                       (bodyTouchingZone ? "true" : "false"),
-                       (wickInZone ? "true" : "false"),
-                       (wickThroughZone ? "true" : "false"));
-            PrintFormat("  - Debug: Support Zone (Top=%.5f, Bottom=%.5f), Candle (O=%.5f, C=%.5f, L=%.5f)",
-                       nearestSupport.topBoundary, nearestSupport.bottomBoundary,
-                       open1, close1, low1);
+          // Ensure we have enough data for index i
+          if (i >= Bars(_Symbol, PERIOD_CURRENT) || ArraySize(emaValues) <= i) break;
+          double close_i = iClose(_Symbol, PERIOD_CURRENT, i);
+          double ema_i = emaValues[i];
+          if (close_i < ema_i)
+          {
+              priceBelowEMARecently = true;
+              PrintFormat("Strategy 2 Bullish: Found close[ %d]=%.5f < EMA[ %d]=%.5f", i, close_i, i, ema_i);
+              break; // Found one, no need to check further
+          }
+      }
+
+      // 3. Check Minimum Touches
+      bool minTouchesMet = (nearestSupport.touchCount >= SR_Min_Touches);
+
+      PrintFormat("Strategy 2 Bullish Check: EngulfingCloseInZone=%s, PriceBelowEMARecently=%s, MinTouchesMet=%s (Touches=%d, Min=%d)",
+                  (engulfingCloseInZone ? "true" : "false"),
+                  (priceBelowEMARecently ? "true" : "false"),
+                  (minTouchesMet ? "true" : "false"),
+                  nearestSupport.touchCount, SR_Min_Touches);
+
+      // Check ALL retest conditions
+      if (engulfingCloseInZone && priceBelowEMARecently && minTouchesMet)
+      {
+         // Check Trend Filter if enabled
+         if (Use_Trend_Filter && currentTrend != TREND_BULLISH)
+         {
+            PrintFormat("Strategy 2: Bullish signal ignored - Trend Filter (%s) is not Bullish.", trendStr);
+            // No trade, but continue checking for bearish below
+         }
+         else // Trend OK or Filter Disabled
+         {
+            Print("Strategy 2 - TRADE Trigger: Bullish conditions met (New Logic):");
+            PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestSupport.touchCount, SR_Min_Touches);
+
+            // Print reason based on new logic
+            PrintFormat("  - Engulfing candle close (%.5f) is within support zone (%.5f - %.5f)",
+                        closeEngulfing, nearestSupport.bottomBoundary, nearestSupport.topBoundary);
+            PrintFormat("  - Price closed below EMA within the last %d bars before engulfing.", lookbackPeriodForEMACross);
+
+            // Target the top of the nearest resistance zone, if one exists
+            double targetResistanceTop = (g_nearestResistanceZoneIndex != -1) ? g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary : 0.0;
+            Print("  - Targeting Resistance Zone Top: ", targetResistanceTop);
+            // SL based on the CLOSE of the bullish engulfing candle (bar 1)
+            double engulfingCloseSLBase = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck); // shiftToCheck is 1
+            PrintFormat("  - SL Base: Bullish Engulfing Close[1]=%.5f", engulfingCloseSLBase);
+            ExecuteTrade(2, MAGIC_STRAT_2, true, targetResistanceTop, engulfingCloseSLBase);
+            return true; // Trade executed
          }
       }
+      else
+      {
+         Print("Strategy 2 - Bullish Engulfing signal ignored due to failed retest conditions (new logic).");
+         // Optionally print which specific condition failed
+         if (!engulfingCloseInZone) PrintFormat("  - Failed: Engulfing Close (%.5f) not within Support Zone (%.5f - %.5f)", closeEngulfing, nearestSupport.bottomBoundary, nearestSupport.topBoundary);
+         if (!priceBelowEMARecently) Print("  - Failed: Price did not close below EMA recently.");
+         if (!minTouchesMet) PrintFormat("  - Failed: Min Touches (%d < %d)", nearestSupport.touchCount, SR_Min_Touches);
+      } // End of new retest logic checks
    }
-   
+
    // Condition: Bearish engulfing AND candle is retesting resistance zone
    if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1) // Check if a nearest zone exists
    {
       SRZone nearestResistance = g_activeResistanceZones[g_nearestResistanceZoneIndex];
-      double emaEngulfing = emaValues[shiftToCheck]; // EMA value for the engulfing candle bar
-      
-      // Get data for the engulfing candle and surrounding candles
-      double open1 = openEngulfing;
-      double close1 = closeEngulfing;
-   double high1 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck);
-   double low1 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck);
-      
-      // Get previous candle data
-      double open2 = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      double close2 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      double high2 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
-      
-      // Comprehensive retest detection - check all possible ways a candle can interact with the zone
-      
-      // 1. Check if the candle body is inside the zone
-      bool bodyInZone = (open1 >= nearestResistance.bottomBoundary && open1 <= nearestResistance.topBoundary) || 
-                        (close1 >= nearestResistance.bottomBoundary && close1 <= nearestResistance.topBoundary);
-      
-      // 2. Check if the candle body crosses/touches the zone
-      bool bodyTouchingZone = (open1 <= nearestResistance.topBoundary && close1 >= nearestResistance.bottomBoundary) ||
-                              (close1 <= nearestResistance.topBoundary && open1 >= nearestResistance.bottomBoundary);
-      
-      // 3. Check if the candle wick is inside the zone
-      bool wickInZone = (high1 >= nearestResistance.bottomBoundary && high1 <= nearestResistance.topBoundary);
-      
-      // 4. Check if the candle wick penetrates through the zone
-      bool wickThroughZone = (high1 > nearestResistance.topBoundary && (open1 < nearestResistance.bottomBoundary || close1 < nearestResistance.bottomBoundary));
-      
-      // Combined retest condition - any interaction with the zone is considered a valid retest
-      bool isValidRetest = bodyInZone || bodyTouchingZone || wickInZone || wickThroughZone;
-      
-      // For debugging
-      if(isValidRetest) {
-         PrintFormat("Valid bearish retest detected: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s",
-                    (bodyInZone ? "true" : "false"),
-                    (bodyTouchingZone ? "true" : "false"),
-                    (wickInZone ? "true" : "false"),
-                    (wickThroughZone ? "true" : "false"));
-      }
-      
-      // Check Zone Touches, Valid Retest, and Price vs EMA
-      // Note: We're making the EMA condition optional by commenting it out
-      if(nearestResistance.touchCount >= SR_Min_Touches && 
-         isValidRetest) // && closeEngulfing < emaEngulfing)
+
+      // 1. Check if engulfing candle close is within the resistance zone boundaries
+      bool engulfingCloseInZone = (closeEngulfing >= nearestResistance.bottomBoundary && closeEngulfing <= nearestResistance.topBoundary);
+
+      // 2. Check if price closed above EMA recently (before engulfing)
+      bool priceAboveEMARecently = false;
+      for (int i = shiftToCheck + 1; i <= shiftToCheck + lookbackPeriodForEMACross; i++)
       {
-         Print("Strategy 2 - TRADE Trigger: Bearish conditions met:");
-         PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestResistance.touchCount, SR_Min_Touches);
-         
-         if(bodyInZone) PrintFormat("  - Candle body inside resistance zone");
-         else if(bodyTouchingZone) PrintFormat("  - Candle body touching resistance zone");
-         else if(wickInZone) PrintFormat("  - Candle wick inside resistance zone");
-         else if(wickThroughZone) PrintFormat("  - Candle wick penetrating through resistance zone");
-         
-         PrintFormat("  - Bearish Engulfing Close (%.5f) vs EMA (%.5f)", closeEngulfing, emaEngulfing);
-         PrintFormat("  - Resistance Zone: Top=%.5f, Bottom=%.5f", nearestResistance.topBoundary, nearestResistance.bottomBoundary);
-         PrintFormat("  - Engulfing Pattern: Current (O=%.5f, C=%.5f), Previous (O=%.5f, C=%.5f)", 
-                    open1, close1, open2, close2);
-         
-         // Target the bottom of the nearest support zone, if one exists
-         double targetSupportBottom = (g_nearestSupportZoneIndex != -1) ? g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary : 0.0;
-         Print("  - Targeting Support Zone Bottom: ", targetSupportBottom);
-         ExecuteTrade(2, MAGIC_STRAT_2, false, targetSupportBottom, nearestResistance.definingBodyHigh); // Pass strat#, magic#, side, target, sl_level
-         return true; // Trade executed
+          // Ensure we have enough data for index i
+          if (i >= Bars(_Symbol, PERIOD_CURRENT) || ArraySize(emaValues) <= i) break;
+          double close_i = iClose(_Symbol, PERIOD_CURRENT, i);
+          double ema_i = emaValues[i];
+          if (close_i > ema_i)
+          {
+              priceAboveEMARecently = true;
+              PrintFormat("Strategy 2 Bearish: Found close[ %d]=%.5f > EMA[ %d]=%.5f", i, close_i, i, ema_i);
+              break; // Found one, no need to check further
+          }
       }
-   else
-   {
-         PrintFormat("Strategy 2 - Bearish Engulfing signal ignored. Touches (%d<%d): %s, Valid Retest: %s, Price/EMA: %s", 
-                     nearestResistance.touchCount, SR_Min_Touches,
-                     (nearestResistance.touchCount >= SR_Min_Touches ? "true" : "false"),
-                     (isValidRetest ? "true" : "false"), 
-                     (closeEngulfing < emaEngulfing ? "true" : "false"));
-         
-         if(!isValidRetest) {
-            PrintFormat("  - Debug: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s", 
-                       (bodyInZone ? "true" : "false"),
-                       (bodyTouchingZone ? "true" : "false"),
-                       (wickInZone ? "true" : "false"),
-                       (wickThroughZone ? "true" : "false"));
-            PrintFormat("  - Debug: Resistance Zone (Top=%.5f, Bottom=%.5f), Candle (O=%.5f, C=%.5f, H=%.5f)",
-                       nearestResistance.topBoundary, nearestResistance.bottomBoundary,
-                       open1, close1, high1);
+
+      // 3. Check Minimum Touches
+      bool minTouchesMet = (nearestResistance.touchCount >= SR_Min_Touches);
+
+      PrintFormat("Strategy 2 Bearish Check: EngulfingCloseInZone=%s, PriceAboveEMARecently=%s, MinTouchesMet=%s (Touches=%d, Min=%d)",
+                  (engulfingCloseInZone ? "true" : "false"),
+                  (priceAboveEMARecently ? "true" : "false"),
+                  (minTouchesMet ? "true" : "false"),
+                  nearestResistance.touchCount, SR_Min_Touches);
+
+      // Check ALL retest conditions
+      if(engulfingCloseInZone && priceAboveEMARecently && minTouchesMet)
+      {
+         // Check Trend Filter if enabled
+         if (Use_Trend_Filter && currentTrend != TREND_BEARISH)
+         {
+             PrintFormat("Strategy 2: Bearish signal ignored - Trend Filter (%s) is not Bearish.", trendStr);
+             // No trade, function will return false at the end if no bullish trade happened
+         }
+         else // Trend OK or Filter Disabled
+         {
+             Print("Strategy 2 - TRADE Trigger: Bearish conditions met (New Logic):");
+             PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestResistance.touchCount, SR_Min_Touches);
+
+             // Print reason based on new logic
+             PrintFormat("  - Engulfing candle close (%.5f) is within resistance zone (%.5f - %.5f)",
+                         closeEngulfing, nearestResistance.bottomBoundary, nearestResistance.topBoundary);
+             PrintFormat("  - Price closed above EMA within the last %d bars before engulfing.", lookbackPeriodForEMACross);
+
+             // Target the bottom of the nearest support zone, if one exists
+             double targetSupportBottom = (g_nearestSupportZoneIndex != -1) ? g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary : 0.0;
+             Print("  - Targeting Support Zone Bottom: ", targetSupportBottom);
+             // SL based on the CLOSE of the bearish engulfing candle (bar 1)
+             double engulfingCloseSLBase = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck); // shiftToCheck is 1
+             PrintFormat("  - SL Base: Bearish Engulfing Close[1]=%.5f", engulfingCloseSLBase);
+             ExecuteTrade(2, MAGIC_STRAT_2, false, targetSupportBottom, engulfingCloseSLBase);
+             return true; // Trade executed
          }
       }
+      else
+      {
+         Print("Strategy 2 - Bearish Engulfing signal ignored due to failed retest conditions (new logic).");
+         // Optionally print which specific condition failed
+         if (!engulfingCloseInZone) PrintFormat("  - Failed: Engulfing Close (%.5f) not within Resistance Zone (%.5f - %.5f)", closeEngulfing, nearestResistance.bottomBoundary, nearestResistance.topBoundary);
+         if (!priceAboveEMARecently) Print("  - Failed: Price did not close above EMA recently.");
+         if (!minTouchesMet) PrintFormat("  - Failed: Min Touches (%d < %d)", nearestResistance.touchCount, SR_Min_Touches);
+      } // End of new retest logic checks
    }
-   
+
    // No trade executed for Strategy 2 this bar
       return false;
 }
@@ -811,9 +857,15 @@ bool CheckStrategy3()
       return false;
    }
    
+   // --- Trend Filter Check ---
+   int currentTrend = GetTrendState();
+   string trendStr = TrendStateToString(currentTrend);
+
    // Check for bullish engulfing pattern
-   if(IsEngulfing(0, true))
+   bool bullishEngulfingS3 = IsEngulfing(0, true);
+   if(bullishEngulfingS3)
    {
+      DrawEngulfingMarker(0, true); // Mark engulfing on bar 0 if detected
       Print("Strategy 3 - Bullish engulfing detected");
       // Look for recently broken resistance zone (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
@@ -823,9 +875,16 @@ bool CheckStrategy3()
          {
             Print("Strategy 3 - Resistance broken at bar ", i);
             // Check if price stayed on the right side of EMA
-            if(StayedOnSideOfEMA(0, 3, true))
-            {
-               Print("Strategy 3 - Price stayed above EMA");
+            // if(StayedOnSideOfEMA(0, 3, true)) // REMOVED EMA SIDE CHECK
+            // {
+               // Check Trend Filter if enabled
+               if (Use_Trend_Filter && currentTrend != TREND_BULLISH)
+               {
+                  PrintFormat("Strategy 3: Bullish signal ignored - Trend Filter (%s) is not Bullish.", trendStr);
+                  continue; // Check next breakout bar 'i'
+               }
+               // Trend OK or Filter Disabled
+               // Print("Strategy 3 - Price stayed above EMA"); // REMOVED
                // We already have the latest nearest resistance zone in g_nearestResistanceZoneIndex from UpdateAndDrawValidSRZones
                // We might need a concept of "further" resistance if the break happened
                // For now, let's just use the current nearest one as the target if it's further away
@@ -834,16 +893,18 @@ bool CheckStrategy3()
                {
                   Print("Strategy 3 - Targeting nearest resistance zone top found at: ", resistance);
                   ExecuteTrade(3, MAGIC_STRAT_3, true, resistance); // SL will use fallback logic (zoneBoundary=0)
-               return true;
-         }
-      }
+                  return true;
+               } // <<< ADDED MISSING BRACE
+            // }
          }
       }
    }
    
    // Check for bearish engulfing pattern
-   if(IsEngulfing(0, false))
+   bool bearishEngulfingS3 = IsEngulfing(0, false);
+   if(bearishEngulfingS3)
    {
+      DrawEngulfingMarker(0, false); // Mark engulfing on bar 0 if detected
       Print("Strategy 3 - Bearish engulfing detected");
       // Look for recently broken support zone (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
@@ -853,17 +914,24 @@ bool CheckStrategy3()
          {
             Print("Strategy 3 - Support broken at bar ", i);
             // Check if price stayed on the right side of EMA
-            if(StayedOnSideOfEMA(0, 3, false))
-            {
-               Print("Strategy 3 - Price stayed below EMA");
+            // if(StayedOnSideOfEMA(0, 3, false)) // REMOVED EMA SIDE CHECK
+            // {
+               // Check Trend Filter if enabled
+               if (Use_Trend_Filter && currentTrend != TREND_BEARISH)
+               {
+                  PrintFormat("Strategy 3: Bearish signal ignored - Trend Filter (%s) is not Bearish.", trendStr);
+                  continue; // Check next breakout bar 'i'
+               }
+               // Trend OK or Filter Disabled
+               // Print("Strategy 3 - Price stayed below EMA"); // REMOVED
                // Similar to above, use the current nearest support. Refine if needed.
                if(g_nearestSupportZoneIndex != -1) // Check if a valid zone exists
                {
                   Print("Strategy 3 - Targeting nearest support zone bottom found at: ", support);
                   ExecuteTrade(3, MAGIC_STRAT_3, false, support); // SL will use fallback logic
-               return true;
-               }
-            }
+                  return true;
+               } // <<< ADDED MISSING BRACE
+            // }
          }
       }
    }
@@ -883,9 +951,20 @@ bool CheckStrategy4()
    Print("Checking Strategy 4 conditions...");
    int shiftToCheck = 1; // Check the last completed bar
    
+   // --- Trend Filter Check ---
+   int currentTrend = GetTrendState();
+   string trendStr = TrendStateToString(currentTrend);
+   
    // Check for bullish engulfing on the last closed bar
    if(IsEngulfing(shiftToCheck, true))
    {
+      // Check Trend Filter if enabled
+      if (Use_Trend_Filter && currentTrend != TREND_BULLISH)
+      {
+         PrintFormat("Strategy 4: Bullish signal ignored - Trend Filter (%s) is not Bullish.", trendStr);
+         return false; // Filtered by trend
+      }
+      // Trend OK or Filter Disabled
       Print("Strategy 4 - Bullish engulfing detected on bar ", shiftToCheck);
       DrawEngulfingMarker(shiftToCheck, true); // Draw marker
       Print("  - Bar (", shiftToCheck, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck));
@@ -900,6 +979,13 @@ bool CheckStrategy4()
    // Check for bearish engulfing on the last closed bar
    if(IsEngulfing(shiftToCheck, false))
    {                             
+      // Check Trend Filter if enabled
+      if (Use_Trend_Filter && currentTrend != TREND_BEARISH)
+      {
+         PrintFormat("Strategy 4: Bearish signal ignored - Trend Filter (%s) is not Bearish.", trendStr);
+         return false; // Filtered by trend
+      }
+      // Trend OK or Filter Disabled
       Print("Strategy 4 - Bearish engulfing detected on bar ", shiftToCheck);
       DrawEngulfingMarker(shiftToCheck, false); // Draw marker
       Print("  - Bar (", shiftToCheck, ") Close: ", iClose(_Symbol, PERIOD_CURRENT, shiftToCheck));
@@ -968,7 +1054,7 @@ void ExecuteTradeStrategy5(bool isBuy)
    Print("Attempting to execute Strategy 5 ", isBuy ? "BUY" : "SELL", " trade...");
    
    // Log current spread at time of trade execution (for information only)
-   LogCurrentSpread();
+   // LogCurrentSpread(); // REMOVED - Undeclared function
    
    // Get current prices and minimum distance
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1064,17 +1150,8 @@ void ExecuteTradeStrategy5(bool isBuy)
    }
 
    // --- Determine Initial Lot Size based on Mode ---
-   double initialLotSize;
-   if(LotSizing_Mode == ALWAYS_MINIMUM_LOT)
-   {
-       initialLotSize = volMin;
-       PrintFormat("Strategy 5: Lot sizing mode set to ALWAYS_MINIMUM_LOT. Using %.5f lots.", initialLotSize);
-   }
-   else // DYNAMIC_MARGIN_CHECK
-   {
-       initialLotSize = NormalizeVolume(S5_Lot_Size);
-       PrintFormat("Strategy 5: Lot sizing mode set to DYNAMIC_MARGIN_CHECK. Attempting %.5f lots.", initialLotSize);
-   }
+   double initialLotSize = volMin; // Directly use minimum volume
+   PrintFormat("Strategy 5: Forcing minimum lot size: %.5f lots.", initialLotSize);
 
    // Ensure initial lot size is not zero
    if (initialLotSize <= 0)
@@ -1159,10 +1236,10 @@ void ExecuteTradeStrategy5(bool isBuy)
    request.comment = "Strategy 5 " + string(isBuy ? "Buy" : "Sell");
    
    // Check current spread and warn if high
-   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread > Max_Spread) {
-      Print("Warning: High spread (", spread, ") but proceeding with trade");
-   }
+   // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
+   // if(spread > Max_Spread) {
+   //    Print("Warning: High spread (", spread, ") but proceeding with trade");
+   // }
    
    // Send trade order
    bool orderSent = OrderSend(request, result);
@@ -1267,9 +1344,11 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
    
    // Calculate stop loss - use 10% of account balance if no zone boundary provided
    double stopLossPrice;
-   if(zoneBoundary != 0.0) {
-      stopLossPrice = isBuy ? zoneBoundary - (SL_Buffer_Pips * _Point) : zoneBoundary + (SL_Buffer_Pips * _Point);
-   } else {
+   if(zoneBoundary != 0.0) { // SL is exactly at the provided level (e.g., engulfing close for Strat 2)
+      stopLossPrice = zoneBoundary;
+      PrintFormat("ExecuteTrade: Using provided boundary %.5f as exact SL", zoneBoundary);
+   } else { // Fallback SL logic (currently uses SL_Fallback_Pips)
+      PrintFormat("ExecuteTrade: No SL boundary provided, using fallback logic...");
       double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       double riskAmount = accountBalance * 0.1; // 10% of account
       double stopDistance = riskAmount / (Lot_Size_1 * SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
@@ -1385,10 +1464,10 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
    request.comment = "Strategy " + string(strategyNum) + " " + string(isBuy ? "Buy" : "Sell");
    
    // Check current spread and warn if high
-   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread > Max_Spread) {
-      Print("Warning: High spread (", spread, ") but proceeding with trade");
-   }
+   // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
+   // if(spread > Max_Spread) {
+   //    Print("Warning: High spread (", spread, ") but proceeding with trade");
+   // }
    
    // Send trade order
    bool orderSent = OrderSend(request, result);
@@ -1412,21 +1491,16 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
          // Strategy 5 uses ExecuteTradeStrategy5
       }
       
-      // Start monitoring for breakeven
-      if(BreakevenTriggerPips > 0)
-      {
-         // Create a timer to check for breakeven conditions
-         EventSetTimer(1); // Check every second
-      }
       
       return true;
    }
    else
    {
       Print("Order execution failed. Retcode: ", result.retcode);
-      return false;
-   }
-}
+         return false;
+      }
+   } // End of ExecuteTrade function body - THIS WAS THE MISPLACED BRACE
+
 //+------------------------------------------------------------------+
 //| Normalize volume according to symbol constraints                 |
 //+------------------------------------------------------------------+
@@ -1730,7 +1804,7 @@ bool ZoneExists(double definingClose, SRZone &existingZones[], int sensitivityPi
           }
      }
      return false; // No close zone found
- }
+}
 
 //+------------------------------------------------------------------+
 //| Update, Validate, and Draw S/R Zones (Based on Local Closes)     |
@@ -2191,7 +2265,7 @@ void UpdateAndDrawValidSRZones()
        // Check zone's bottom boundary relative to current price
        if(g_activeSupportZones[i].bottomBoundary < currentPrice)
        {   
-           if(g_activeSupportZones[i].bottomBoundary > maxSupportBottomBelowPrice)
+           if(bestSupportIndex == -1 || g_activeSupportZones[i].bottomBoundary > maxSupportBottomBelowPrice) // Corrected logic to find highest bottom
            {   
                maxSupportBottomBelowPrice = g_activeSupportZones[i].bottomBoundary;
                bestSupportIndex = i;
@@ -2216,10 +2290,60 @@ void UpdateAndDrawValidSRZones()
        }
    }
    g_nearestResistanceZoneIndex = bestResistanceIndex;
-   
-   Print("S/R Zone Update Complete. Active Support Zones: ", ArraySize(g_activeSupportZones), " Active Resistance Zones: ", ArraySize(g_activeResistanceZones));
-   Print("  -> Nearest Support Index: ", g_nearestSupportZoneIndex, " (Bottom: ", (g_nearestSupportZoneIndex != -1 ? DoubleToString(g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary, _Digits) : "N/A"), ")");
-   Print("  -> Nearest Resistance Index: ", g_nearestResistanceZoneIndex, " (Top: ", (g_nearestResistanceZoneIndex != -1 ? DoubleToString(g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary, _Digits) : "N/A"), ")");
+    
+    Print("S/R Zone Update Complete. Active Support Zones: ", ArraySize(g_activeSupportZones), " Active Resistance Zones: ", ArraySize(g_activeResistanceZones));
+    Print("  -> Nearest Support Index: ", g_nearestSupportZoneIndex, " (Bottom: ", (g_nearestSupportZoneIndex != -1 ? DoubleToString(g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary, _Digits) : "N/A"), ")");
+    Print("  -> Nearest Resistance Index: ", g_nearestResistanceZoneIndex, " (Top: ", (g_nearestResistanceZoneIndex != -1 ? DoubleToString(g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary, _Digits) : "N/A"), ")");
+}
+
+//+------------------------------------------------------------------+
+//| Determine Trend State using EMA(20/50) crossover and ADX(14)   |
+//+------------------------------------------------------------------+
+int GetTrendState()
+{
+   // Ensure we have data
+   if (ArraySize(trendFastEmaValues) < 1 || ArraySize(trendSlowEmaValues) < 1 || ArraySize(trendAdxValues) < 1)
+   {
+      Print("GetTrendState Error: Not enough indicator data available.");
+      return TREND_RANGING; // Default to ranging if data is missing
+   }
+
+   double fastEMA = trendFastEmaValues[0]; // Latest value (bar 0)
+   double slowEMA = trendSlowEmaValues[0]; // Latest value (bar 0)
+   double adxValue = trendAdxValues[0];   // Latest value (bar 0)
+
+   // Define the hardcoded ADX threshold
+   double adxThreshold = 25.0;
+
+   bool isStrong = (adxValue > adxThreshold);
+   bool isBullish = (fastEMA > slowEMA);
+
+   if (isStrong && isBullish)
+   {
+      return TREND_BULLISH;
+   }
+   else if (isStrong && !isBullish)
+   {
+      return TREND_BEARISH;
+   }
+   else // ADX is weak or EMAs are crossed incorrectly
+   {
+      return TREND_RANGING;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Convert Trend State enum to string for logging                 |
+//+------------------------------------------------------------------+
+string TrendStateToString(int trendState)
+{
+   switch(trendState)
+   {
+      case TREND_BULLISH: return "Bullish";
+      case TREND_BEARISH: return "Bearish";
+      case TREND_RANGING: return "Ranging";
+      default: return "Unknown";
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -2242,7 +2366,8 @@ bool IsStrategyOnCooldown(int strategyNum, ulong magicNum)
       }
    }
 
-   // 2. Check Time-Based Cooldown
+   // 2. REMOVED Time-Based Cooldown Check
+   /*
    datetime lastTradeTime = 0;
    switch(strategyNum)
    {
@@ -2253,108 +2378,350 @@ bool IsStrategyOnCooldown(int strategyNum, ulong magicNum)
       case 5: lastTradeTime = g_lastTradeTimeStrat5; break;
       default: return false; // Invalid strategy number
    }
-
+ 
    if (lastTradeTime == 0) return false; // No previous trade recorded
-
+ 
    long timeSinceLastTrade = TimeCurrent() - lastTradeTime;
-   long cooldownSeconds = Strategy_Cooldown_Minutes * 60;
-
+   // long cooldownSeconds = Strategy_Cooldown_Minutes * 60; // Input removed
+   long cooldownSeconds = 60 * 60; // Example: Hardcoded 60 minutes if needed without input
+ 
    if (timeSinceLastTrade < cooldownSeconds)
    {
-       PrintFormat("Strategy %d skipped: On time cooldown. Time since last trade: %d seconds (< %d seconds).", 
+       PrintFormat("Strategy %d skipped: On time cooldown. Time since last trade: %d seconds (< %d seconds).",
                    strategyNum, timeSinceLastTrade, cooldownSeconds);
        return true; // Within cooldown period
    }
+   */
 
-   return false; // Not on cooldown
+   return false; // Not on cooldown (only position check remains)
 }
 
 //+------------------------------------------------------------------+
 //| Timer function to check for breakeven conditions                 |
 //+------------------------------------------------------------------+
 void OnTimer()
-{
+{ // Updated logic for mandatory 70% breakeven on Strats 1, 2, 3
+   // Check if breakeven logic is enabled
+   if (!Use_Breakeven_Logic || BreakevenTriggerPips <= 0) // Also check if TriggerPips is positive
+   {
+       return; // Breakeven disabled or trigger pips not set
+   }
+   
    // Iterate through all open positions
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0)
+      if(!PositionSelectByTicket(ticket)) continue; // Ensure position is selected
+
+      // Check if position belongs to this EA and Strategies 1, 2, or 3
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol)
       {
-         // Check if position belongs to this EA
-         if(PositionGetString(POSITION_SYMBOL) == _Symbol)
+         long magic = PositionGetInteger(POSITION_MAGIC);
+         if (magic == MAGIC_STRAT_1 || magic == MAGIC_STRAT_2 || magic == MAGIC_STRAT_3)
          {
             long positionType = PositionGetInteger(POSITION_TYPE);
             double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
             double currentSL = PositionGetDouble(POSITION_SL);
+            double takeProfit = PositionGetDouble(POSITION_TP);
             double currentPrice = 0;
-            double profitPips = 0;
-            
-            // Calculate current profit in pips
+            double progress = 0;
+            double totalDistance = 0;
+
+            // --- Check if TP is valid and SL is not already at breakeven ---
+            if (takeProfit == 0.0) continue; // No TP set, cannot calculate progress
+            // Use a small tolerance for float comparison
+            if (MathAbs(currentSL - openPrice) < _Point) continue; // Already at breakeven (or very close)
+
+            // --- Calculate Progress ---
             if(positionType == POSITION_TYPE_BUY)
             {
                currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-               profitPips = (currentPrice - openPrice) / _Point;
+               if (currentPrice <= openPrice) continue; // Not in profit
+               totalDistance = takeProfit - openPrice;
+               if (totalDistance <= 0) continue; // Should not happen with valid TP
+               progress = currentPrice - openPrice;
             }
             else // SELL
             {
                currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-               profitPips = (openPrice - currentPrice) / _Point;
+               if (currentPrice >= openPrice) continue; // Not in profit
+               totalDistance = openPrice - takeProfit;
+                if (totalDistance <= 0) continue; // Should not happen with valid TP
+               progress = openPrice - currentPrice;
             }
-            
-            // Check if profit has reached breakeven trigger level
-            if(profitPips >= BreakevenTriggerPips)
+
+            // --- Check if 70% progress reached ---
+            if(progress >= (totalDistance * 0.70))
             {
-               // Calculate new breakeven SL with buffer
-               double newSL = 0;
+               // Normalize openPrice just in case (though it should be fine)
+               double newSL = NormalizeDouble(openPrice, _Digits);
+
+               // Check if the new SL (breakeven) is actually better than the current SL
+               // AND respects minimum stops level
+               bool shouldModify = false;
+               double minStopDistPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+
                if(positionType == POSITION_TYPE_BUY)
                {
-                  newSL = openPrice + (BreakevenBufferPips * _Point);
+                  // Ensure BE SL is not too close to current Bid
+                  if (newSL <= (currentPrice - minStopDistPoints))
+                  {
+                     // Modify if current SL is below breakeven (or not set, 0.0)
+                     // Add tolerance for float comparison here too
+                     if (currentSL < newSL - _Point || currentSL == 0.0) shouldModify = true;
+                  } else {
+                     // Cannot set BE due to stops level, maybe log warning or try later?
+                     PrintFormat("OnTimer (Ticket: %d): Cannot set breakeven SL=%.5f, too close to current Bid=%.5f (Min Dist=%.5f)", ticket, newSL, currentPrice, minStopDistPoints);
+                     continue; // Skip modification attempt for now
+                  }
                }
                else // SELL
                {
-                  newSL = openPrice - (BreakevenBufferPips * _Point);
+                   // Ensure BE SL is not too close to current Ask
+                   if (newSL >= (currentPrice + minStopDistPoints))
+                   {
+                      // Modify if current SL is above breakeven (or not set, 0.0)
+                       // Add tolerance for float comparison
+                      if (currentSL == 0.0 || currentSL > newSL + _Point) shouldModify = true;
+                   } else {
+                      // Cannot set BE due to stops level
+                       PrintFormat("OnTimer (Ticket: %d): Cannot set breakeven SL=%.5f, too close to current Ask=%.5f (Min Dist=%.5f)", ticket, newSL, currentPrice, minStopDistPoints);
+                       continue; // Skip modification attempt for now
+                   }
                }
-               
-               // Only modify if new SL is better than current SL
-               bool shouldModify = false;
-               if(positionType == POSITION_TYPE_BUY && newSL > currentSL)
-               {
-                  shouldModify = true;
-               }
-               else if(positionType == POSITION_TYPE_SELL && (currentSL == 0 || newSL < currentSL))
-               {
-                  shouldModify = true;
-               }
-               
+
                if(shouldModify)
                {
+                  PrintFormat("OnTimer (Ticket: %d, Magic: %d): Progress %.2f%% >= 70%%. Moving SL to Breakeven: %.5f",
+                              ticket, magic, (progress/totalDistance)*100.0, newSL);
+
                   // Modify the position
                   MqlTradeRequest request = {};
                   MqlTradeResult result = {};
-                  
+
                   request.action = TRADE_ACTION_SLTP;
                   request.position = ticket;
                   request.sl = newSL;
-                  request.tp = PositionGetDouble(POSITION_TP); // Keep original TP
-                  
+                  request.tp = takeProfit; // Keep original TP
+
                   if(OrderSend(request, result))
                   {
-                     if(result.retcode == TRADE_RETCODE_DONE)
+                     if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
                      {
-                        Print("Breakeven SL set successfully for position ", ticket, ". New SL: ", newSL);
+                        PrintFormat("OnTimer (Ticket: %d): Breakeven SL set successfully to %.5f", ticket, newSL);
                      }
                      else
                      {
-                        Print("Failed to set breakeven SL. Retcode: ", result.retcode);
+                        PrintFormat("OnTimer (Ticket: %d): Failed to set breakeven SL. Retcode: %d (%s), Comment: %s",
+                                     ticket, result.retcode, TradeRetcodeToString(result.retcode), result.comment);
                      }
                   }
                   else
                   {
-                     Print("OrderSend failed for breakeven SL. Error: ", GetLastError());
+                     PrintFormat("OnTimer (Ticket: %d): OrderSend failed for breakeven SL. Error: %d", ticket, GetLastError());
                   }
+                  // Process one breakeven per timer event to avoid request spam
+                  break;
                }
             }
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Strategy 1 trade with specific SL/TP logic               |
+//+------------------------------------------------------------------+
+bool ExecuteTradeStrategy1(bool isBuy, double slZoneBoundary)
+{
+    int strategyNum = 1;
+    ulong magicNum = MAGIC_STRAT_1;
+    PrintFormat("ExecuteTradeStrategy1 called (Magic: %d, Buy: %s, SL Boundary: %.5f)", magicNum, (isBuy ? "true" : "false"), slZoneBoundary);
+
+    // Get current prices
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double entryPrice = isBuy ? ask : bid;
+
+    // --- SL Calculation ---
+    double stopLossPrice = 0;
+    if (isBuy)
+    {
+        stopLossPrice = slZoneBoundary; // Exactly at the support bottom boundary
+    }
+    else // Sell
+    {
+        stopLossPrice = slZoneBoundary; // Exactly at the resistance top boundary
+    }
+
+    // Check if SL is too close (less than stops level)
+    int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    double minStopDistance = stopsLevel * _Point;
+
+    if (isBuy && (entryPrice - stopLossPrice) < minStopDistance)
+    {
+        stopLossPrice = entryPrice - minStopDistance;
+        Print("ExecuteTradeStrategy1: Adjusted BUY SL to minimum distance: ", stopLossPrice);
+    }
+    else if (!isBuy && (stopLossPrice - entryPrice) < minStopDistance)
+    {
+        stopLossPrice = entryPrice + minStopDistance;
+        Print("ExecuteTradeStrategy1: Adjusted SELL SL to minimum distance: ", stopLossPrice);
+    }
+    stopLossPrice = NormalizeDouble(stopLossPrice, _Digits); // Normalize after adjustments
+
+    // --- TP Calculation (Based on EMA[1] and Distance to SL Boundary) ---
+    double takeProfitPrice = 0;
+    double ema1 = emaValues[1]; // EMA value at the crossover bar
+
+    if (ema1 == 0) // Basic check if EMA value is valid
+    {
+        Print("ExecuteTradeStrategy1 Error: EMA value for bar 1 is not available. Cannot calculate TP.");
+        return false;
+    }
+
+    double distance = 0;
+    if (isBuy)
+    {
+        distance = MathAbs(ema1 - slZoneBoundary); // Distance between EMA[1] and Support Bottom
+        takeProfitPrice = ema1 + 2 * distance;     // TP = EMA[1] + 2 * Distance
+    }
+    else // Sell
+    {
+        distance = MathAbs(slZoneBoundary - ema1); // Distance between Resistance Top and EMA[1]
+        takeProfitPrice = ema1 - 2 * distance;     // TP = EMA[1] - 2 * Distance
+    }
+    takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
+
+    PrintFormat("ExecuteTradeStrategy1: Calculated SL=%.5f, TP=%.5f (Based on EMA[1]=%.5f, Distance=%.5f)",
+                stopLossPrice, takeProfitPrice, ema1, distance);
+
+    // --- Determine Initial Lot Size based on Mode ---
+    double initialLotSize = volMin; // Directly use minimum volume
+    PrintFormat("ExecuteTradeStrategy1: Forcing minimum lot size: %.5f lots.", initialLotSize);
+
+    // Ensure initial lot size is not zero
+    if (initialLotSize <= 0)
+    {
+        Print("ExecuteTradeStrategy1 Error: Initial lot size is zero or less. Cannot trade.");
+        return false;
+    }
+
+    // --- Margin Check ---
+    double marginRequired = 0;
+    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+    string orderTypeStr = isBuy ? "Buy" : "Sell";
+    double lotSize = initialLotSize; // Start with the determined lot size
+
+    if (!OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lotSize, entryPrice, marginRequired))
+    {
+        Print("ExecuteTradeStrategy1 Error: OrderCalcMargin failed for initial lot size. Error: ", GetLastError());
+        return false;
+    }
+
+    PrintFormat("ExecuteTradeStrategy1: Checking margin for %s %.5f lots. Required: %.2f, Available Free: %.2f",
+                orderTypeStr, lotSize, marginRequired, freeMargin);
+
+    if (marginRequired > freeMargin)
+    {
+        // Only attempt fallback to minimum lot if in DYNAMIC_MARGIN_CHECK mode
+        if (LotSizing_Mode == DYNAMIC_MARGIN_CHECK)
+        {
+            PrintFormat("ExecuteTradeStrategy1 Warning: Insufficient margin (%.2f) for desired lot size (%.5f). Attempting minimum lot size (%.5f).",
+                        freeMargin, lotSize, volMin);
+            lotSize = volMin; // Attempt minimum lot size
+
+            // Ensure minimum lot is not zero
+            if (lotSize <= 0)
+            {
+                Print("ExecuteTradeStrategy1 Error: Minimum lot size (volMin) is zero or less. Cannot trade.");
+                return false;
+            }
+
+            // Recalculate margin for minimum lot size
+            if (!OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lotSize, entryPrice, marginRequired))
+            {
+                Print("ExecuteTradeStrategy1 Error: OrderCalcMargin failed for minimum lot size. Error: ", GetLastError());
+                return false;
+            }
+
+            PrintFormat("ExecuteTradeStrategy1: Margin check for minimum lot %.5f. Required: %.2f, Available Free: %.2f",
+                        lotSize, marginRequired, freeMargin);
+        }
+        // If not DYNAMIC_MARGIN_CHECK, proceed to the final check below
+
+        // Final check: is there enough margin for the current lotSize?
+        if (marginRequired > freeMargin)
+        {
+            PrintFormat("ExecuteTradeStrategy1 Error: Insufficient margin (%.2f) even for %s lot size (%.5f). Required: %.2f. Aborting trade.",
+                        freeMargin, (LotSizing_Mode == ALWAYS_MINIMUM_LOT ? "minimum" : "fallback minimum"), lotSize, marginRequired);
+            return false;
+        }
+
+        // Log if proceeding with minimum lot in dynamic mode
+        if (LotSizing_Mode == DYNAMIC_MARGIN_CHECK && lotSize == volMin)
+            Print("ExecuteTradeStrategy1: Proceeding with minimum lot size: ", lotSize);
+    }
+    // --- End Margin Check ---
+
+    // Prepare trade request
+    MqlTradeRequest request;
+    MqlTradeResult result;
+    ZeroMemory(request);
+    ZeroMemory(result);
+
+    request.action = TRADE_ACTION_DEAL;
+    request.symbol = _Symbol;
+    request.volume = lotSize;
+    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+    request.price = entryPrice; // Market order price
+    request.sl = stopLossPrice;
+    request.tp = takeProfitPrice;
+    request.deviation = 10; // Allowable deviation for market order execution
+    request.magic = magicNum;
+    request.comment = "Strategy " + string(strategyNum) + " " + string(isBuy ? "Buy" : "Sell");
+
+    // Check current spread and warn if high (informational only)
+    // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
+    // if (spread > Max_Spread)
+    // {
+    //     Print("Warning: High spread (", spread, ") but proceeding with trade");
+    // }
+
+    // Send trade order
+    bool orderSent = OrderSend(request, result);
+
+    if (!orderSent)
+    {
+        Print("ExecuteTradeStrategy1: OrderSend failed. Error code: ", GetLastError());
+        return false;
+    }
+
+    if (result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+    {
+        PrintFormat("ExecuteTradeStrategy1: Order executed successfully. Ticket: %d, SL: %.5f, TP: %.5f, Volume: %.2f",
+                    result.order, request.sl, request.tp, request.volume);
+        g_lastTradeTimeStrat1 = TimeCurrent(); // Update cooldown timer for Strategy 1
+
+        // Start monitoring for breakeven if enabled
+        if (BreakevenTriggerPips > 0)
+        {
+            EventSetTimer(1); // Ensure timer is running (checks every second)
+        }
+
+        // Store the SL level used for this trade for S/R cooldown
+        if (isBuy)
+            g_strat1_active_buy_sl_level = request.sl;
+        else
+            g_strat1_active_sell_sl_level = request.sl;
+        PrintFormat("ExecuteTradeStrategy1: Stored active SL level %.5f for %s S/R cooldown.", request.sl, (isBuy ? "BUY" : "SELL"));
+
+        return true;
+    }
+    else
+    {
+        PrintFormat("ExecuteTradeStrategy1: Order execution failed. Retcode: %d (%s), Comment: %s",
+                    result.retcode, TradeRetcodeToString(result.retcode), result.comment);
+        return false;
+    }
 }
