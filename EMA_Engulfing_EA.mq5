@@ -11,38 +11,63 @@
 // Include spread check functionality
 #include "include/SpreadCheck.mqh"
 
+struct SRZone
+{
+   double topBoundary;     // Highest point of the zone
+   double bottomBoundary;  // Lowest point of the zone
+   double definingClose;   // The close price that defined this zone (used for sensitivity check)
+   bool   isResistance;    // True if resistance zone, false if support zone
+   long   chartObjectID_Top; // ID for the top line object
+   long   chartObjectID_Bottom; // ID for the bottom line object
+   int    touchCount;      // Number of times price has tested this zone
+
+   void operator=(const SRZone &zone)
+   {
+      topBoundary = zone.topBoundary;
+      bottomBoundary = zone.bottomBoundary;
+      definingClose = zone.definingClose;
+      isResistance = zone.isResistance;
+      chartObjectID_Top = zone.chartObjectID_Top;
+      chartObjectID_Bottom = zone.chartObjectID_Bottom;
+      touchCount = zone.touchCount;
+   }
+};
+
 // Input parameters
 input int         EMA_Period = 20;       // EMA period
 input double      Lot_Size_1 = 1;     // First entry lot size
-input double      Lot_Size_2 = 2;     // Second entry lot size
-input double      RR_Ratio_1 = 1.7;      // Risk:Reward ratio for first target
-input double      RR_Ratio_2 = 2.0;      // Risk:Reward ratio for second target
+input double      Lot_Size_2 = 0.5;     // Second entry lot size
+input double      RR_Ratio = 1.5;           // Risk/Reward Ratio for Take Profit (Consolidated)
 input int         Max_Spread = 180;      // Maximum spread for logging purposes only
-input bool        Use_Strategy_1 = false; // Use EMA crossing + engulfing strategy
+input bool        Use_Strategy_1 = true; // Use EMA crossing + engulfing strategy
 input bool        Use_Strategy_2 = false; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = false; // Use breakout + EMA engulfing strategy
-input bool        Use_Strategy_4 = true; // Use simple engulfing strategy
+input bool        Use_Strategy_4 = false; // Use simple engulfing strategy
 input bool        Use_Strategy_5 = false;  // Use simple movement strategy (for testing)
-input int         SL_Buffer_Pips = 5;    // Additional buffer for stop loss in pips
-input int         SR_Lookback = 50;       // Number of candles to look back for S/R levels
-input int         SR_Strength = 3;        // Minimum number of touches for S/R level
-input double      SR_Tolerance = 0.0005;   // Tolerance for S/R level detection
-input int         SR_MinBars = 3;        // Minimum bars between S/R levels
-input int         Engulfing_AvgBody_Period = 12; // Period for Avg Body Size check in IsEngulfing
-input bool        Engulfing_Use_Trend_Filter = false; // Use MA trend filter in IsEngulfing
+input bool        Engulfing_Use_Trend_Filter = false; // ENABLED BY DEFAULT: Use MA trend filter in IsEngulfing
+input int         SL_Buffer_Pips = 10;    // Buffer in pips for Stop Loss
+input int         SR_Lookback = 50;       // Number of candles to look back for S/R zones
+input int         SR_Sensitivity_Pips = 5;    // Min distance between S/R zone defining closes
+input double      SL_Fallback_Pips = 2000;   // SL distance in pips when zone boundary is not used (Increased default further)
+input int         SR_Min_Touches = 2;       // Minimum touches required for a zone to be tradable
 
 // Strategy 5 Inputs
 input double      S5_Lot_Size = 1;    // Lot size for Strategy 5
 input int         S5_Min_Body_Pips = 1; // Minimum candle body size in pips for Strategy 5
 input int         S5_TP_Pips = 10;      // Take Profit distance in pips for Strategy 5 (Increased Default)
 input bool        S5_Use_Trailing_Stop = true; // Enable trailing stop for Strategy 5
-input int         S5_Trail_Pips = 5;      // Trailing stop distance in pips
+input bool        S5_DisableTP = true;     // Disable take profit, only use trailing stop
+input int         S5_Trail_Pips = 5;       // Trailing stop distance in pips
 input int         S5_Trail_Activation_Pips = 5; // Pips in profit to activate trailing stop
+
+// Breakeven Trailing Stop Inputs
+input int         BreakevenTriggerPoints = 50;  // Points profit to trigger breakeven
+input int         BreakevenBufferPoints = 5;    // Points buffer above/below breakeven
 
 // Global variables
 int emaHandle;
 double emaValues[];
-int barCount;
+long barCount; // Changed to long to match Bars() return type
 ulong posTicket1 = 0;
 ulong posTicket2 = 0;
 
@@ -50,6 +75,17 @@ ulong posTicket2 = 0;
 double volMin = 0.0;
 double volMax = 0.0;
 double volStep = 0.0;
+
+// Global variables for stateful S/R zones
+SRZone g_activeSupportZones[]; 
+SRZone g_activeResistanceZones[]; 
+int    g_nearestSupportZoneIndex = -1;  
+int    g_nearestResistanceZoneIndex = -1; 
+
+//+------------------------------------------------------------------+
+//| SR Zone Struct                                                   |
+//+------------------------------------------------------------------+
+
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                    |
@@ -99,11 +135,31 @@ int OnInit()
    // Initialize barCount to track new bars
    barCount = Bars(_Symbol, PERIOD_CURRENT);
    
+   // Clear active S/R zone arrays on init
+   ArrayFree(g_activeSupportZones);
+   ArrayFree(g_activeResistanceZones);
+   g_nearestSupportZoneIndex = -1;
+   g_nearestResistanceZoneIndex = -1;
+   
    // Display information about the current symbol
    Print("Symbol: ", _Symbol, ", Digits: ", _Digits, ", Point: ", _Point);
    Print("SPREAD LIMITING REMOVED: EA will trade regardless of spread conditions");
+   int stopsLevel = SafeLongToInt(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL));
+   PrintFormat("Broker Info: Min Stops Level = %d points (%.*f price distance)", 
+               stopsLevel, _Digits, stopsLevel * _Point);
    
    return(INIT_SUCCEEDED);
+}
+
+// Convert long to int safely with range check
+int SafeLongToInt(long value)
+{
+   if(value > INT_MAX || value < INT_MIN)
+   {
+      Print("Warning: Long value ", value, " is out of int range");
+      return (int)MathMin(MathMax(value, INT_MIN), INT_MAX);
+   }
+   return (int)value;
 }
 
 //+------------------------------------------------------------------+
@@ -148,6 +204,9 @@ void OnTick()
       
    // Log current spread for reference (but don't use it to limit trading)
    IsSpreadAcceptable(Max_Spread);
+   
+   // Update and Draw Valid S/R Zones (NEW - Call this once per bar)
+   UpdateAndDrawValidSRZones();
    
    // Reset comment
    Comment("");
@@ -207,22 +266,21 @@ bool HasOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Check if the current bar forms an engulfing pattern (Indicator Logic) |
+//| Check if the current bar forms an engulfing pattern (Relaxed Indicator Logic) |
 //+------------------------------------------------------------------+
 bool IsEngulfing(int shift, bool bullish)
 {
    // Use index i for current, i+1 for prior, aligning with indicator logic
-   int i = shift;     // Typically 0 when called from CheckStrategyX
-   int priorIdx = i + 1; // Typically 1 when called from CheckStrategyX
+   int i = shift;     // Typically 0 when called from CheckStrategyX -> NOW 1
+   int priorIdx = i + 1; // Typically 1 when called from CheckStrategyX -> NOW 2
    
    // Basic check for sufficient bars
-   if(Bars(_Symbol, PERIOD_CURRENT) < Engulfing_AvgBody_Period + 3 || priorIdx < 0)
+   if(Bars(_Symbol, PERIOD_CURRENT) < 3 || priorIdx < 0)
    {
-      // Print("IsEngulfing Error: Not enough bars available for calculation.");
       return false;
    }
 
-   // Get required price data using iOpen/iClose etc. for reliability
+   // Get required price data
    double open1 = iOpen(_Symbol, PERIOD_CURRENT, i);     // Current Open
    double close1 = iClose(_Symbol, PERIOD_CURRENT, i);    // Current Close
    double open2 = iOpen(_Symbol, PERIOD_CURRENT, priorIdx); // Prior Open
@@ -235,75 +293,60 @@ bool IsEngulfing(int shift, bool bullish)
       return false;
    }
    
-   // Calculate current body size
-   double body1 = MathAbs(open1 - close1); 
+   // Minimal tolerance for float comparisons
+   double tolerance = _Point; 
 
-   // Calculate average body size ending at the prior bar
-   double avgBody = CalculateAverageBody(Engulfing_AvgBody_Period, priorIdx); 
-   if(avgBody <= 0) 
-   {
-       Print("IsEngulfing Warning: Could not calculate valid Average Body Size. Skipping avg body check.");
-   }
-   
-   // --- Trend Filter (Optional) --- 
-   bool trendOkBull = true; 
-   bool trendOkBear = true;
+   Print("Analyzing candles for engulfing pattern (Relaxed Indicator Logic):");
+   Print("  - Current Bar (", i, "): O=", open1, " C=", close1);
+   Print("  - Previous Bar (", priorIdx, "): O=", open2, " C=", close2);
+
+   // --- Trend Filter (Optional - Check if enabled) --- 
+   bool trendOkBull = !Engulfing_Use_Trend_Filter; // Default to true if filter is OFF
+   bool trendOkBear = !Engulfing_Use_Trend_Filter;
    if(Engulfing_Use_Trend_Filter)
    {
-      // Ensure emaValues are up-to-date (should be called in OnTick)
       if(ArraySize(emaValues) < priorIdx + 1)
       {
          Print("IsEngulfing Error: EMA values not available for trend filter index ", priorIdx);
-         return false; // Cannot apply filter if data is missing
+         return false; 
       }
-      double maPrior = emaValues[priorIdx]; // Use pre-calculated EMA value for prior bar
-      double midOCPrior = (open2 + close2) / 2.0; // Midpoint of prior bar
-      
-      trendOkBull = midOCPrior < maPrior; // Trend Filter for Bullish: Prior Mid < MA
-      trendOkBear = midOCPrior > maPrior; // Trend Filter for Bearish: Prior Mid > MA
+      double maPrior = emaValues[priorIdx]; 
+      double midOCPrior = (open2 + close2) / 2.0; 
+      trendOkBull = midOCPrior < maPrior;
+      trendOkBear = midOCPrior > maPrior;
+      Print("  - Trend Filter Check: Bull OK=", trendOkBull, ", Bear OK=", trendOkBear);
    }
-
-   Print("Analyzing candles for engulfing pattern (Indicator Logic):");
-   Print("  - Current Bar (", i, "): O=", open1, " C=", close1, " Body=", body1);
-   Print("  - Previous Bar (", priorIdx, "): O=", open2, " C=", close2);
-   Print("  - Avg Body Size (", Engulfing_AvgBody_Period, " bars ending prior): ", avgBody);
-   if(Engulfing_Use_Trend_Filter)
-      Print("  - Trend Filter: Bullish OK=", trendOkBull, ", Bearish OK=", trendOkBear);
 
    // --- Check Engulfing Pattern --- 
    bool isEngulfing = false;
    
    if(bullish) // Bullish Engulfing Check
    {
-      bool priorIsBearish = (close2 < open2);
-      bool currentIsBullish = (close1 > open1);
-      bool engulfsBody = (open1 < close2) && (close1 > open2);
-      bool largerThanAvg = (avgBody > 0) ? (body1 > avgBody) : true; // Skip if avgBody invalid
+      bool priorIsBearish = (close2 < open2 - tolerance);
+      bool currentIsBullish = (close1 > open1 + tolerance);
+      bool engulfsBody = (open1 < close2 - tolerance) && (close1 > open2 + tolerance);
       
-      Print("Checking Bullish Engulfing Conditions (Indicator Logic):");
-      Print("  - Prior is Bearish (C2<O2): ", priorIsBearish);
-      Print("  - Current is Bullish (C1>O1): ", currentIsBullish);
-      Print("  - Engulfs Prior Body (O1<C2 && C1>O2): ", engulfsBody);
-      Print("  - Current Body > Avg Body (B1>Avg): ", largerThanAvg, " (Avg:", avgBody, ")");
+      Print("Checking Bullish Engulfing Conditions (Relaxed Indicator Logic):");
+      Print("  - Prior is Bearish (C2<O2-T): ", priorIsBearish);
+      Print("  - Current is Bullish (C1>O1+T): ", currentIsBullish);
+      Print("  - Engulfs Prior Body (O1<C2-T && C1>O2+T): ", engulfsBody);
       if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBull);
       
-      isEngulfing = priorIsBearish && currentIsBullish && engulfsBody && largerThanAvg && trendOkBull;
+      isEngulfing = priorIsBearish && currentIsBullish && engulfsBody && trendOkBull;
    }
    else // Bearish Engulfing Check
    {
-      bool priorIsBullish = (close2 > open2);
-      bool currentIsBearish = (close1 < open1);
-      bool engulfsBody = (open1 > close2) && (close1 < open2);
-      bool largerThanAvg = (avgBody > 0) ? (body1 > avgBody) : true; // Skip if avgBody invalid
-
-      Print("Checking Bearish Engulfing Conditions (Indicator Logic):");
-      Print("  - Prior is Bullish (C2>O2): ", priorIsBullish);
-      Print("  - Current is Bearish (C1<O1): ", currentIsBearish);
-      Print("  - Engulfs Prior Body (O1>C2 && C1<O2): ", engulfsBody);
-      Print("  - Current Body > Avg Body (B1>Avg): ", largerThanAvg, " (Avg:", avgBody, ")");
+      bool priorIsBullish = (close2 > open2 + tolerance);
+      bool currentIsBearish = (close1 < open1 - tolerance);
+      bool engulfsBody = (open1 > close2 + tolerance) && (close1 < open2 - tolerance);
+      
+      Print("Checking Bearish Engulfing Conditions (Relaxed Indicator Logic):");
+      Print("  - Prior is Bullish (C2>O2+T): ", priorIsBullish);
+      Print("  - Current is Bearish (C1<O1-T): ", currentIsBearish);
+      Print("  - Engulfs Prior Body (O1>C2+T && C1<O2-T): ", engulfsBody);
       if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBear);
       
-      isEngulfing = priorIsBullish && currentIsBearish && engulfsBody && largerThanAvg && trendOkBear;
+      isEngulfing = priorIsBullish && currentIsBearish && engulfsBody && trendOkBear;
    }
    
    Print("  - Final Result: ", isEngulfing);
@@ -344,155 +387,6 @@ bool StayedOnSideOfEMA(int startBar, int bars, bool above)
 }
 
 //+------------------------------------------------------------------+
-//| Check if the bar is a resistance level                           |
-//+------------------------------------------------------------------+
-bool IsResistanceLevel(int barIndex, double strength)
-{
-   double high = iHigh(_Symbol, PERIOD_CURRENT, barIndex);
-   int count = 0;
-   
-   // Check if the high is a local maximum (relaxed condition)
-   bool isLocalMax = true;
-   for(int i = 1; i <= 3; i++)
-   {
-      if(barIndex + i < Bars(_Symbol, PERIOD_CURRENT) && 
-         barIndex - i >= 0)
-      {
-         if(high <= iHigh(_Symbol, PERIOD_CURRENT, barIndex + i) ||
-            high <= iHigh(_Symbol, PERIOD_CURRENT, barIndex - i))
-         {
-            isLocalMax = false;
-            break;
-         }
-      }
-   }
-   
-   if(isLocalMax)
-   {
-      // Count how many times price approached this level using percentage tolerance
-      for(int i = 0; i < SR_Lookback; i++)
-      {
-         if(i == barIndex) continue; // Skip the current bar
-         
-         double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
-         double tolerance = high * (SR_Tolerance / 100.0);
-         
-         if(MathAbs(barHigh - high) <= tolerance)
-            count++;
-      }
-   }
-   
-   return count >= strength;
-}
-
-//+------------------------------------------------------------------+
-//| Check if the bar is a support level                              |
-//+------------------------------------------------------------------+
-bool IsSupportLevel(int barIndex, double strength)
-{
-   double low = iLow(_Symbol, PERIOD_CURRENT, barIndex);
-   int count = 0;
-   
-   // Check if the low is a local minimum (relaxed condition)
-   bool isLocalMin = true;
-   for(int i = 1; i <= 3; i++)
-   {
-      if(barIndex + i < Bars(_Symbol, PERIOD_CURRENT) && 
-         barIndex - i >= 0)
-      {
-         if(low >= iLow(_Symbol, PERIOD_CURRENT, barIndex + i) ||
-            low >= iLow(_Symbol, PERIOD_CURRENT, barIndex - i))
-         {
-            isLocalMin = false;
-            break;
-         }
-      }
-   }
-   
-   if(isLocalMin)
-   {
-      // Count how many times price approached this level using percentage tolerance
-      for(int i = 0; i < SR_Lookback; i++)
-      {
-         if(i == barIndex) continue; // Skip the current bar
-         
-         double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
-         double tolerance = low * (SR_Tolerance / 100.0);
-         
-         if(MathAbs(barLow - low) <= tolerance)
-            count++;
-      }
-   }
-   
-   return count >= strength;
-}
-
-//+------------------------------------------------------------------+
-//| Find nearest support/resistance level                            |
-//+------------------------------------------------------------------+
-double FindNearestSR(bool findResistance)
-{
-   double levels[];
-   int levelCount = 0;
-   datetime lastLevelTime = 0;
-   
-   // Look for potential S/R points in the lookback period
-   for(int i = 1; i < SR_Lookback - 1; i++)
-   {
-      // Skip if too close to the last level
-      datetime currentTime = iTime(_Symbol, PERIOD_CURRENT, i);
-      if(lastLevelTime > 0 && (currentTime - lastLevelTime) < SR_MinBars * PeriodSeconds(PERIOD_CURRENT))
-         continue;
-      
-      double high = iHigh(_Symbol, PERIOD_CURRENT, i);
-      double low = iLow(_Symbol, PERIOD_CURRENT, i);
-      
-      if(findResistance)
-      {
-         if(IsResistanceLevel(i, SR_Strength))
-         {
-            ArrayResize(levels, levelCount + 1);
-            levels[levelCount] = high;
-            levelCount++;
-            lastLevelTime = currentTime;
-         }
-      }
-      else
-      {
-         if(IsSupportLevel(i, SR_Strength))
-         {
-            ArrayResize(levels, levelCount + 1);
-            levels[levelCount] = low;
-            levelCount++;
-            lastLevelTime = currentTime;
-         }
-      }
-   }
-   
-   // Find the nearest level to current price
-   if(levelCount > 0)
-   {
-      double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double nearestLevel = levels[0];
-      double minDistance = MathAbs(currentPrice - nearestLevel);
-      
-      for(int i = 1; i < levelCount; i++)
-      {
-         double distance = MathAbs(currentPrice - levels[i]);
-         if(distance < minDistance)
-         {
-            minDistance = distance;
-            nearestLevel = levels[i];
-         }
-      }
-      
-      return nearestLevel;
-   }
-   
-   return 0; // No level found
-}
-
-//+------------------------------------------------------------------+
 //| Check if price broke through resistance/support                  |
 //+------------------------------------------------------------------+
 bool BrokeLevel(int shift, double level, bool breakUp)
@@ -518,51 +412,58 @@ double CalculateTakeProfit(bool isBuy, double entryPrice, double stopLoss, doubl
 }
 
 //+------------------------------------------------------------------+
-//| Strategy 1: EMA crossing + engulfing without closing opposite    |
+//| Strategy 1: EMA Crossover (Checks last closed bar)               |
 //+------------------------------------------------------------------+
 bool CheckStrategy1()
 {
    Print("Checking Strategy 1 conditions...");
    
-   // Check for bullish setup
-   if(CrossedEMA(1, true) && IsEngulfing(0, true) && StayedOnSideOfEMA(0, 3, true))
+   // Check crossover on the last closed bar (index 1)
+   int shiftToCheck = 1;
+   // Use pre-calculated emaValues array (indices 1 and 2 needed)
+   if (ArraySize(emaValues) < 3) 
+   { 
+      Print("CheckStrategy1 Error: Not enough EMA values calculated."); 
+      return false; 
+   }
+   double emaCurrent = emaValues[shiftToCheck];     // EMA for bar 1
+   double emaPrevious = emaValues[shiftToCheck + 1]; // EMA for bar 2
+   double closeCurrent = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);    // Close for bar 1
+   double closePrevious = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1); // Close for bar 2
+
+   // Check for bullish crossover
+   if(emaCurrent > emaPrevious && closeCurrent > emaCurrent && closePrevious <= emaPrevious)
    {
-      Print("Strategy 1 - Bullish conditions met:");
-      Print("  - EMA crossed upward: ", CrossedEMA(1, true));
-      Print("  - Bullish engulfing: ", IsEngulfing(0, true));
-      Print("  - Price stayed above EMA: ", StayedOnSideOfEMA(0, 3, true));
-      
-      double resistance = FindNearestSR(true);
-      if(resistance > 0)
+      Print("Strategy 1 - Bullish EMA Crossover detected");
+      // Target the nearest resistance zone top
+      if(g_nearestResistanceZoneIndex != -1) 
       {
-         Print("  - Found resistance level at: ", resistance);
-         ExecuteTrade(true, resistance);
+         double resistanceTop = g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary;
+         Print("  - Found resistance zone top at: ", resistanceTop);
+         ExecuteTrade(true, resistanceTop);
          return true;
       }
       else
       {
-         Print("  - No valid resistance level found");
+         Print("  - No valid resistance zone found");
       }
    }
    
-   // Check for bearish setup
-   if(CrossedEMA(1, false) && IsEngulfing(0, false) && StayedOnSideOfEMA(0, 3, false))
+   // Check for bearish crossover
+   if(emaCurrent < emaPrevious && closeCurrent < emaCurrent && closePrevious >= emaPrevious)
    {
-      Print("Strategy 1 - Bearish conditions met:");
-      Print("  - EMA crossed downward: ", CrossedEMA(1, false));
-      Print("  - Bearish engulfing: ", IsEngulfing(0, false));
-      Print("  - Price stayed below EMA: ", StayedOnSideOfEMA(0, 3, false));
-      
-      double support = FindNearestSR(false);
-      if(support > 0)
+      Print("Strategy 1 - Bearish EMA Crossover detected");
+      // Target the nearest support zone bottom
+      if(g_nearestSupportZoneIndex != -1)
       {
-         Print("  - Found support level at: ", support);
-         ExecuteTrade(false, support);
+         double supportBottom = g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary;
+         Print("  - Found support zone bottom at: ", supportBottom);
+         ExecuteTrade(false, supportBottom);
          return true;
       }
       else
       {
-         Print("  - No valid support level found");
+         Print("  - No valid support zone found");
       }
    }
    
@@ -570,41 +471,254 @@ bool CheckStrategy1()
 }
 
 //+------------------------------------------------------------------+
-//| Strategy 2: Engulfing at support/resistance                      |
+//| Strategy 2: Engulfing at S/R (Checks last bar, marks all engulfing)|
 //+------------------------------------------------------------------+
 bool CheckStrategy2()
 {
    Print("Checking Strategy 2 conditions...");
-   double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
+   int shiftToCheck = 1; // Check the last completed bar
    
-   // Find nearest support and resistance
-   double resistance = FindNearestSR(true);
-   double support = FindNearestSR(false);
-   
-   Print("Strategy 2 - Current Price: ", currentPrice);
-   Print("Strategy 2 - Nearest Resistance: ", resistance);
-   Print("Strategy 2 - Nearest Support: ", support);
-   
-   // Check for bullish engulfing near support
-   if(support > 0 && MathAbs(currentPrice - support) < 20 * _Point && IsEngulfing(0, true))
-   {
-      Print("Strategy 2 - Bullish conditions met:");
-      Print("  - Price near support: ", MathAbs(currentPrice - support), " points away");
-      Print("  - Bullish engulfing: ", IsEngulfing(0, true));
-      ExecuteTrade(true, resistance);
-      return true;
+   // --- Check and Mark Engulfing Pattern First --- 
+   bool isBullishEngulfing = IsEngulfing(shiftToCheck, true);
+   bool isBearishEngulfing = false; 
+   if (!isBullishEngulfing) // Only check bearish if not bullish
+   { 
+       isBearishEngulfing = IsEngulfing(shiftToCheck, false);
    }
    
-   // Check for bearish engulfing near resistance
-   if(resistance > 0 && MathAbs(currentPrice - resistance) < 20 * _Point && IsEngulfing(0, false))
+   // Draw marker if any engulfing pattern was found
+   if (isBullishEngulfing)
    {
-      Print("Strategy 2 - Bearish conditions met:");
-      Print("  - Price near resistance: ", MathAbs(currentPrice - resistance), " points away");
-      Print("  - Bearish engulfing: ", IsEngulfing(0, false));
-      ExecuteTrade(false, support);
-      return true;
+       DrawEngulfingMarker(shiftToCheck, true); 
+       Print("Strategy 2 - Potential Bullish Engulfing Marked on bar ", shiftToCheck);
+   }
+   else if (isBearishEngulfing)
+   {
+       DrawEngulfingMarker(shiftToCheck, false);
+       Print("Strategy 2 - Potential Bearish Engulfing Marked on bar ", shiftToCheck);
+   }
+   // --------------------------------------------------
+   
+   // Get prices for the completed bar (index 1) for S/R check
+   double closePriceBar1 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);
+   if (closePriceBar1 == 0) 
+   {   
+       Print("Strategy 2 Error: Could not get close price for bar ", shiftToCheck);
+       return false; // Error getting price
+   }
+
+   // Nearest support/resistance zones are now found in UpdateAndDrawValidSRZones()
+   // We use the global indices g_nearestSupportZoneIndex and g_nearestResistanceZoneIndex
+   
+   Print("Strategy 2 - Price (Bar ", shiftToCheck, "): ", closePriceBar1);
+   Print("Strategy 2 - Nearest Resistance Zone Index: ", g_nearestResistanceZoneIndex);
+   Print("Strategy 2 - Nearest Support Zone Index: ", g_nearestSupportZoneIndex);
+   
+   // --- Now check for TRADE conditions --- 
+   
+   // Get Open and Close of the engulfing candle (shiftToCheck = 1)
+   double openEngulfing = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck);
+   double closeEngulfing = closePriceBar1; // We already have this
+   
+   // Condition: Bullish engulfing AND candle is retesting support zone
+   if(isBullishEngulfing && g_nearestSupportZoneIndex != -1) // Check if a nearest zone exists
+   {
+      SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
+      double emaEngulfing = emaValues[shiftToCheck]; // EMA value for the engulfing candle bar
+      
+      // Get data for the engulfing candle and surrounding candles
+      double open1 = openEngulfing;
+      double close1 = closeEngulfing;
+      double low1 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck);
+      double high1 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck);
+      
+      // Get previous candle data
+      double open2 = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      double close2 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      double low2 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      
+      // Comprehensive retest detection - check all possible ways a candle can interact with the zone
+      
+      // 1. Check if the candle body is inside the zone
+      bool bodyInZone = (open1 >= nearestSupport.bottomBoundary && open1 <= nearestSupport.topBoundary) || 
+                        (close1 >= nearestSupport.bottomBoundary && close1 <= nearestSupport.topBoundary);
+      
+      // 2. Check if the candle body crosses/touches the zone
+      bool bodyTouchingZone = (open1 <= nearestSupport.topBoundary && close1 >= nearestSupport.bottomBoundary) ||
+                              (close1 <= nearestSupport.topBoundary && open1 >= nearestSupport.bottomBoundary);
+      
+      // 3. Check if the candle wick is inside the zone
+      bool wickInZone = (low1 >= nearestSupport.bottomBoundary && low1 <= nearestSupport.topBoundary);
+      
+      // 4. Check if the candle wick penetrates through the zone
+      bool wickThroughZone = (low1 < nearestSupport.bottomBoundary && (open1 > nearestSupport.topBoundary || close1 > nearestSupport.topBoundary));
+      
+      // 5. Check if the candle is near the zone (within a small threshold)
+      double nearZoneThreshold = 10 * _Point; // Adjust based on your instrument
+      bool nearZone = (MathAbs(low1 - nearestSupport.topBoundary) <= nearZoneThreshold) || 
+                      (MathAbs(open1 - nearestSupport.topBoundary) <= nearZoneThreshold) ||
+                      (MathAbs(close1 - nearestSupport.topBoundary) <= nearZoneThreshold);
+      
+      // Combined retest condition - any interaction with the zone is considered a valid retest
+      bool isValidRetest = bodyInZone || bodyTouchingZone || wickInZone || wickThroughZone || nearZone;
+      
+      // For debugging
+      if(isValidRetest) {
+         PrintFormat("Valid bullish retest detected: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s, nearZone=%s",
+                    (bodyInZone ? "true" : "false"),
+                    (bodyTouchingZone ? "true" : "false"),
+                    (wickInZone ? "true" : "false"),
+                    (wickThroughZone ? "true" : "false"),
+                    (nearZone ? "true" : "false"));
+      }
+      
+      // Check Zone Touches, Valid Retest, and Price vs EMA
+      // Note: We're making the EMA condition optional by commenting it out
+      if (nearestSupport.touchCount >= SR_Min_Touches && 
+          isValidRetest) // && closeEngulfing > emaEngulfing)
+      {
+         Print("Strategy 2 - TRADE Trigger: Bullish conditions met:");
+         PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestSupport.touchCount, SR_Min_Touches);
+         
+         if(bodyInZone) PrintFormat("  - Candle body inside support zone");
+         else if(bodyTouchingZone) PrintFormat("  - Candle body touching support zone");
+         else if(wickInZone) PrintFormat("  - Candle wick inside support zone");
+         else if(wickThroughZone) PrintFormat("  - Candle wick penetrating through support zone");
+         else if(nearZone) PrintFormat("  - Candle near support zone");
+         
+         PrintFormat("  - Bullish Engulfing Close (%.5f) vs EMA (%.5f)", closeEngulfing, emaEngulfing);
+         PrintFormat("  - Support Zone: Top=%.5f, Bottom=%.5f", nearestSupport.topBoundary, nearestSupport.bottomBoundary);
+         PrintFormat("  - Engulfing Pattern: Current (O=%.5f, C=%.5f), Previous (O=%.5f, C=%.5f)", 
+                    open1, close1, open2, close2);
+         
+         // Target the top of the nearest resistance zone, if one exists
+         double targetResistanceTop = (g_nearestResistanceZoneIndex != -1) ? g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary : 0.0;
+         Print("  - Targeting Resistance Zone Top: ", targetResistanceTop);
+         ExecuteTrade(true, targetResistanceTop, nearestSupport.bottomBoundary); // Pass support bottom boundary for SL calc
+         return true; // Trade executed
+      }
+      else
+      {
+         PrintFormat("Strategy 2 - Bullish Engulfing signal ignored. Touches (%d<%d): %s, Valid Retest: %s, Price/EMA: %s", 
+                     nearestSupport.touchCount, SR_Min_Touches,
+                     (nearestSupport.touchCount >= SR_Min_Touches ? "true" : "false"),
+                     (isValidRetest ? "true" : "false"), 
+                     (closeEngulfing > emaEngulfing ? "true" : "false"));
+         
+         if(!isValidRetest) {
+            PrintFormat("  - Debug: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s, nearZone=%s", 
+                       (bodyInZone ? "true" : "false"),
+                       (bodyTouchingZone ? "true" : "false"),
+                       (wickInZone ? "true" : "false"),
+                       (wickThroughZone ? "true" : "false"),
+                       (nearZone ? "true" : "false"));
+            PrintFormat("  - Debug: Support Zone (Top=%.5f, Bottom=%.5f), Candle (O=%.5f, C=%.5f, L=%.5f)",
+                       nearestSupport.topBoundary, nearestSupport.bottomBoundary,
+                       open1, close1, low1);
+         }
+      }
    }
    
+   // Condition: Bearish engulfing AND candle is retesting resistance zone
+   if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1) // Check if a nearest zone exists
+   {
+      SRZone nearestResistance = g_activeResistanceZones[g_nearestResistanceZoneIndex];
+      double emaEngulfing = emaValues[shiftToCheck]; // EMA value for the engulfing candle bar
+      
+      // Get data for the engulfing candle and surrounding candles
+      double open1 = openEngulfing;
+      double close1 = closeEngulfing;
+      double high1 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck);
+      double low1 = iLow(_Symbol, PERIOD_CURRENT, shiftToCheck);
+      
+      // Get previous candle data
+      double open2 = iOpen(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      double close2 = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      double high2 = iHigh(_Symbol, PERIOD_CURRENT, shiftToCheck + 1);
+      
+      // Comprehensive retest detection - check all possible ways a candle can interact with the zone
+      
+      // 1. Check if the candle body is inside the zone
+      bool bodyInZone = (open1 >= nearestResistance.bottomBoundary && open1 <= nearestResistance.topBoundary) || 
+                        (close1 >= nearestResistance.bottomBoundary && close1 <= nearestResistance.topBoundary);
+      
+      // 2. Check if the candle body crosses/touches the zone
+      bool bodyTouchingZone = (open1 <= nearestResistance.topBoundary && close1 >= nearestResistance.bottomBoundary) ||
+                              (close1 <= nearestResistance.topBoundary && open1 >= nearestResistance.bottomBoundary);
+      
+      // 3. Check if the candle wick is inside the zone
+      bool wickInZone = (high1 >= nearestResistance.bottomBoundary && high1 <= nearestResistance.topBoundary);
+      
+      // 4. Check if the candle wick penetrates through the zone
+      bool wickThroughZone = (high1 > nearestResistance.topBoundary && (open1 < nearestResistance.bottomBoundary || close1 < nearestResistance.bottomBoundary));
+      
+      // 5. Check if the candle is near the zone (within a small threshold)
+      double nearZoneThreshold = 10 * _Point; // Adjust based on your instrument
+      bool nearZone = (MathAbs(high1 - nearestResistance.bottomBoundary) <= nearZoneThreshold) || 
+                      (MathAbs(open1 - nearestResistance.bottomBoundary) <= nearZoneThreshold) ||
+                      (MathAbs(close1 - nearestResistance.bottomBoundary) <= nearZoneThreshold);
+      
+      // Combined retest condition - any interaction with the zone is considered a valid retest
+      bool isValidRetest = bodyInZone || bodyTouchingZone || wickInZone || wickThroughZone || nearZone;
+      
+      // For debugging
+      if(isValidRetest) {
+         PrintFormat("Valid bearish retest detected: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s, nearZone=%s",
+                    (bodyInZone ? "true" : "false"),
+                    (bodyTouchingZone ? "true" : "false"),
+                    (wickInZone ? "true" : "false"),
+                    (wickThroughZone ? "true" : "false"),
+                    (nearZone ? "true" : "false"));
+      }
+      
+      // Check Zone Touches, Valid Retest, and Price vs EMA
+      // Note: We're making the EMA condition optional by commenting it out
+      if(nearestResistance.touchCount >= SR_Min_Touches && 
+         isValidRetest) // && closeEngulfing < emaEngulfing)
+      {
+         Print("Strategy 2 - TRADE Trigger: Bearish conditions met:");
+         PrintFormat("  - Zone Touches (%d) >= Min Touches (%d)", nearestResistance.touchCount, SR_Min_Touches);
+         
+         if(bodyInZone) PrintFormat("  - Candle body inside resistance zone");
+         else if(bodyTouchingZone) PrintFormat("  - Candle body touching resistance zone");
+         else if(wickInZone) PrintFormat("  - Candle wick inside resistance zone");
+         else if(wickThroughZone) PrintFormat("  - Candle wick penetrating through resistance zone");
+         else if(nearZone) PrintFormat("  - Candle near resistance zone");
+         
+         PrintFormat("  - Bearish Engulfing Close (%.5f) vs EMA (%.5f)", closeEngulfing, emaEngulfing);
+         PrintFormat("  - Resistance Zone: Top=%.5f, Bottom=%.5f", nearestResistance.topBoundary, nearestResistance.bottomBoundary);
+         PrintFormat("  - Engulfing Pattern: Current (O=%.5f, C=%.5f), Previous (O=%.5f, C=%.5f)", 
+                    open1, close1, open2, close2);
+         
+         // Target the bottom of the nearest support zone, if one exists
+         double targetSupportBottom = (g_nearestSupportZoneIndex != -1) ? g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary : 0.0;
+         Print("  - Targeting Support Zone Bottom: ", targetSupportBottom);
+         ExecuteTrade(false, targetSupportBottom, nearestResistance.topBoundary); // Pass resistance top boundary for SL calc
+         return true; // Trade executed
+      }
+      else
+      {
+         PrintFormat("Strategy 2 - Bearish Engulfing signal ignored. Touches (%d<%d): %s, Valid Retest: %s, Price/EMA: %s", 
+                     nearestResistance.touchCount, SR_Min_Touches,
+                     (nearestResistance.touchCount >= SR_Min_Touches ? "true" : "false"),
+                     (isValidRetest ? "true" : "false"), 
+                     (closeEngulfing < emaEngulfing ? "true" : "false"));
+         
+         if(!isValidRetest) {
+            PrintFormat("  - Debug: bodyInZone=%s, bodyTouchingZone=%s, wickInZone=%s, wickThroughZone=%s, nearZone=%s", 
+                       (bodyInZone ? "true" : "false"),
+                       (bodyTouchingZone ? "true" : "false"),
+                       (wickInZone ? "true" : "false"),
+                       (wickThroughZone ? "true" : "false"),
+                       (nearZone ? "true" : "false"));
+            PrintFormat("  - Debug: Resistance Zone (Top=%.5f, Bottom=%.5f), Candle (O=%.5f, C=%.5f, H=%.5f)",
+                       nearestResistance.topBoundary, nearestResistance.bottomBoundary,
+                       open1, close1, high1);
+         }
+      }
+   }
+   
+   // No trade executed for Strategy 2 this bar
    return false;
 }
 
@@ -616,17 +730,17 @@ bool CheckStrategy3()
    Print("Checking Strategy 3 conditions...");
    double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
    
-   // Find nearest resistance and support
-   double resistance = FindNearestSR(true);
-   double support = FindNearestSR(false);
+   // Find nearest resistance and support - USE GLOBAL VARIABLES NOW
+   double resistance = g_nearestResistanceZoneIndex != -1 ? g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary : 0.0;
+   double support = g_nearestSupportZoneIndex != -1 ? g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary : 0.0;
    
    Print("Strategy 3 - Current Price: ", currentPrice);
-   Print("Strategy 3 - Nearest Resistance: ", resistance);
-   Print("Strategy 3 - Nearest Support: ", support);
+   Print("Strategy 3 - Nearest Resistance Zone Top (Global): ", resistance);
+   Print("Strategy 3 - Nearest Support Zone Bottom (Global): ", support);
    
    if(resistance == 0 || support == 0)
    {
-      Print("Strategy 3 - No valid support/resistance levels found");
+      Print("Strategy 3 - No valid support/resistance zone found");
       return false;
    }
    
@@ -634,10 +748,10 @@ bool CheckStrategy3()
    if(IsEngulfing(0, true))
    {
       Print("Strategy 3 - Bullish engulfing detected");
-      // Look for recently broken resistance levels (within the last 5 bars)
+      // Look for recently broken resistance zone (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
       {
-         // Check if bar i broke through resistance
+         // Check if bar i broke through resistance (TOP boundary)
          if(BrokeLevel(i, resistance, true))
          {
             Print("Strategy 3 - Resistance broken at bar ", i);
@@ -645,11 +759,14 @@ bool CheckStrategy3()
             if(StayedOnSideOfEMA(0, 3, true))
             {
                Print("Strategy 3 - Price stayed above EMA");
-               double newResistance = FindNearestSR(true);
-               if(newResistance > 0 && newResistance > resistance)
+               // We already have the latest nearest resistance zone in g_nearestResistanceZoneIndex from UpdateAndDrawValidSRZones
+               // We might need a concept of "further" resistance if the break happened
+               // For now, let's just use the current nearest one as the target if it's further away
+               // Note: This logic might need refinement depending on exact strategy goal after break.
+               if(g_nearestResistanceZoneIndex != -1) // Check if a valid zone exists
                {
-                  Print("Strategy 3 - New resistance found at: ", newResistance);
-                  ExecuteTrade(true, newResistance);
+                  Print("Strategy 3 - Targeting nearest resistance zone top found at: ", resistance);
+                  ExecuteTrade(true, resistance);
                   return true;
                }
             }
@@ -661,10 +778,10 @@ bool CheckStrategy3()
    if(IsEngulfing(0, false))
    {
       Print("Strategy 3 - Bearish engulfing detected");
-      // Look for recently broken support levels (within the last 5 bars)
+      // Look for recently broken support zone (within the last 5 bars)
       for(int i = 1; i <= 5; i++)
       {
-         // Check if bar i broke through support
+         // Check if bar i broke through support (BOTTOM boundary)
          if(BrokeLevel(i, support, false))
          {
             Print("Strategy 3 - Support broken at bar ", i);
@@ -672,11 +789,11 @@ bool CheckStrategy3()
             if(StayedOnSideOfEMA(0, 3, false))
             {
                Print("Strategy 3 - Price stayed below EMA");
-               double newSupport = FindNearestSR(false);
-               if(newSupport > 0 && newSupport < support)
+               // Similar to above, use the current nearest support. Refine if needed.
+               if(g_nearestSupportZoneIndex != -1) // Check if a valid zone exists
                {
-                  Print("Strategy 3 - New support found at: ", newSupport);
-                  ExecuteTrade(false, newSupport);
+                  Print("Strategy 3 - Targeting nearest support zone bottom found at: ", support);
+                  ExecuteTrade(false, support);
                   return true;
                }
             }
@@ -790,9 +907,12 @@ void ExecuteTradeStrategy5(bool isBuy)
       // Place SL below current Bid, respecting minimum stops level
       stopLoss = bid - minStopDistPoints;
       // Correct TP logic: TP above entry for BUY
-      takeProfit = ask + S5_TP_Pips * _Point;
-      // Ensure TP is at least minStopDistPoints away from Ask
-      takeProfit = MathMax(takeProfit, ask + minStopDistPoints);
+      if (!S5_DisableTP)
+      {
+         takeProfit = ask + S5_TP_Pips * _Point;
+         // Ensure TP is at least minStopDistPoints away from Ask
+         takeProfit = MathMax(takeProfit, ask + minStopDistPoints);
+      }
    }
    else // Sell
    {
@@ -800,20 +920,33 @@ void ExecuteTradeStrategy5(bool isBuy)
       // Place SL above current Ask, respecting minimum stops level
       stopLoss = ask + minStopDistPoints;
       // Correct TP logic: TP below entry for SELL
-      takeProfit = bid - S5_TP_Pips * _Point;
-      // Ensure TP is at least minStopDistPoints away from Bid
-      takeProfit = MathMin(takeProfit, bid - minStopDistPoints);
+      if (!S5_DisableTP)
+      {
+         takeProfit = bid - S5_TP_Pips * _Point;
+         // Ensure TP is at least minStopDistPoints away from Bid
+         takeProfit = MathMin(takeProfit, bid - minStopDistPoints);
+      }
    }
    
    // Normalize prices to the correct number of digits
    stopLoss = NormalizeDouble(stopLoss, _Digits);
-   takeProfit = NormalizeDouble(takeProfit, _Digits);
+   if (!S5_DisableTP)
+   {
+      takeProfit = NormalizeDouble(takeProfit, _Digits);
+   }
    
    Print("Strategy 5 Trade Parameters (Corrected TP Logic):");
    Print("  - Direction: ", isBuy ? "BUY" : "SELL");
    Print("  - Entry Price (Approx): ", entryPrice); // Market order, actual entry may vary slightly
    Print("  - Stop Loss: ", stopLoss);
-   Print("  - Take Profit: ", takeProfit);
+   if (!S5_DisableTP)
+   {
+      Print("  - Take Profit: ", takeProfit);
+   }
+   else
+   {
+      Print("  - Take Profit: Disabled");
+   }
    
    //--- Check if calculated SL/TP are logical --- 
    if(isBuy)
@@ -823,11 +956,14 @@ void ExecuteTradeStrategy5(bool isBuy)
          Print("Strategy 5 Error: Calculated SL (", stopLoss, ") is not below Ask price (", entryPrice, "). Aborting trade.");
          return;
       }
-      if(takeProfit >= entryPrice)
+      if(!S5_DisableTP)
       {
-          Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not below Ask price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
-          // Adjust TP further if necessary, e.g., set it equal to SL? Or skip TP?
-          // For now, we proceed but log warning. Broker might still reject.
+         if(takeProfit >= entryPrice)
+         {
+            Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not below Ask price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
+            // Adjust TP further if necessary, e.g., set it equal to SL? Or skip TP?
+            // For now, we proceed but log warning. Broker might still reject.
+         }
       }
    }
    else // Sell
@@ -837,11 +973,14 @@ void ExecuteTradeStrategy5(bool isBuy)
          Print("Strategy 5 Error: Calculated SL (", stopLoss, ") is not above Bid price (", entryPrice, "). Aborting trade.");
          return;
       }
-       if(takeProfit <= entryPrice)
+      if(!S5_DisableTP)
       {
-          Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not above Bid price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
-          // Adjust TP further if necessary? Or skip TP?
-          // For now, we proceed but log warning. Broker might still reject.
+         if(takeProfit <= entryPrice)
+         {
+            Print("Strategy 5 Warning: Calculated TP (", takeProfit, ") is not above Bid price (", entryPrice, "). Check S5_TP_Pips and Stops Level.");
+            // Adjust TP further if necessary? Or skip TP?
+            // For now, we proceed but log warning. Broker might still reject.
+         }
       }
    }
 
@@ -869,7 +1008,10 @@ void ExecuteTradeStrategy5(bool isBuy)
    // For market orders, price is ignored, but fill it for clarity
    request.price = isBuy ? ask : bid; 
    request.sl = stopLoss;
-   request.tp = takeProfit;
+   if (!S5_DisableTP)
+   {
+      request.tp = takeProfit;
+   }
    request.deviation = 10;
    request.magic = 654321; // Use a different magic number for Strategy 5
    request.comment = "Strategy 5 " + string(isBuy ? "Buy" : "Sell");
@@ -879,7 +1021,6 @@ void ExecuteTradeStrategy5(bool isBuy)
    // Check return value of OrderSend
    bool orderSent = OrderSend(request, result);
    
-   // Enhanced Error Logging
    if(!orderSent)
    {   
        Print("OrderSend function failed immediately. Error code: ", GetLastError());
@@ -964,233 +1105,95 @@ string TradeRetcodeToString(uint retcode)
 //+------------------------------------------------------------------+
 //| Execute trade with proper risk management                        |
 //+------------------------------------------------------------------+
-void ExecuteTrade(bool isBuy, double targetLevel)
+//+------------------------------------------------------------------+
+//| Execute trade with custom risk management                        |
+//+------------------------------------------------------------------+
+bool ExecuteTrade(bool isBuy, double targetPrice, double zoneBoundary = 0.0)
 {
-   Print("Attempting to execute ", isBuy ? "BUY" : "SELL", " trade...");
-   Print("Target Level: ", targetLevel);
-   
-   // Log current spread at time of trade execution (for information only)
-   LogCurrentSpread();
-   
-   double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double stopLoss = 0;
-   double takeProfit1 = 0;
-   double takeProfit2 = 0;
-   
-   Print("Current Price: ", currentPrice);
-   
-   // Calculate stop loss based on the previous candle
-   if(isBuy)
-   {
-      stopLoss = iLow(_Symbol, PERIOD_CURRENT, 1) - SL_Buffer_Pips * _Point;
-   }
-   else
-   {
-      stopLoss = iHigh(_Symbol, PERIOD_CURRENT, 1) + SL_Buffer_Pips * _Point;
-   }
-   
-   Print("Initial Stop Loss: ", stopLoss);
-   
-   // Make sure the stop loss isn't too close to current price
-   double minSLDistance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-   
-   if(isBuy && (currentPrice - stopLoss) < minSLDistance)
-   {
-      stopLoss = currentPrice - minSLDistance;
-      Print("Stop loss adjusted due to minimum distance requirement. New SL: ", stopLoss);
-   }
-   else if(!isBuy && (stopLoss - currentPrice) < minSLDistance)
-   {
-      stopLoss = currentPrice + minSLDistance;
-      Print("Stop loss adjusted due to minimum distance requirement. New SL: ", stopLoss);
-   }
-   
-   // Get current ask/bid for TP checks
+   // Get current prices
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
-   // Calculate take profit levels
-   takeProfit1 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_1);
-   takeProfit2 = CalculateTakeProfit(isBuy, currentPrice, stopLoss, RR_Ratio_2);
+   // Calculate entry price with spread consideration
+   double entryPrice = isBuy ? ask : bid;
    
-   Print("Initial Take Profit 1: ", takeProfit1);
-   Print("Initial Take Profit 2: ", takeProfit2);
+   // Calculate distance to EMA for TP
+   double emaCurrent = emaValues[0];
+   double distanceToEMA = MathAbs(entryPrice - emaCurrent);
    
-   // Check if the TP is beyond the target level, adjust if necessary
-   if(targetLevel != 0) // Only adjust if a valid targetLevel was provided
-   {
-      if(isBuy)
-      {
-         if(takeProfit1 > targetLevel)
-         {  // Don't place TP1 beyond the resistance
-            takeProfit1 = targetLevel - _Point; // Place slightly below resistance
-            Print("TP1 adjusted to stay below resistance level. New TP1: ", takeProfit1);
-         }
-            
-         if(takeProfit2 > targetLevel)
-         { // Don't place TP2 beyond the resistance
-            takeProfit2 = targetLevel; 
-            Print("TP2 adjusted to target resistance level. New TP2: ", takeProfit2);
-         }
-      }
-      else // Sell
-      {
-         if(takeProfit1 < targetLevel)
-         { // Don't place TP1 beyond the support
-            takeProfit1 = targetLevel + _Point; // Place slightly above support
-            Print("TP1 adjusted to stay above support level. New TP1: ", takeProfit1);
-         }
-            
-         if(takeProfit2 < targetLevel)
-         { // Don't place TP2 beyond the support
-            takeProfit2 = targetLevel;
-            Print("TP2 adjusted to target support level. New TP2: ", takeProfit2);
-         }
-      }
+   // Calculate TP as twice the distance from S/R to EMA
+   double takeProfitPrice = isBuy ? targetPrice + (2 * distanceToEMA) : targetPrice - (2 * distanceToEMA);
+   
+   // Calculate stop loss - use 10% of account balance if no zone boundary provided
+   double stopLossPrice;
+   if(zoneBoundary != 0.0) {
+      stopLossPrice = isBuy ? zoneBoundary - (SL_Buffer_Pips * _Point) : zoneBoundary + (SL_Buffer_Pips * _Point);
+   } else {
+      double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double riskAmount = accountBalance * 0.1; // 10% of account
+      double stopDistance = riskAmount / (Lot_Size_1 * SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+      stopLossPrice = isBuy ? entryPrice - stopDistance : entryPrice + stopDistance;
    }
    
-   // Ensure TPs respect minimum stop distance
-   if(isBuy)
-   {
-      double minTP1 = ask + minSLDistance;
-      double minTP2 = ask + minSLDistance;
-      if(takeProfit1 < minTP1)
-      {
-         Print("TP1 adjusted *up* to minimum distance. Old TP1: ", takeProfit1, ", New TP1: ", minTP1);
-         takeProfit1 = minTP1;
-      }
-      if(takeProfit2 < minTP2)
-      {
-          Print("TP2 adjusted *up* to minimum distance. Old TP2: ", takeProfit2, ", New TP2: ", minTP2);
-          takeProfit2 = minTP2;
-      }
+   // Check if SL is too close (less than stops level)
+   int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStopDistance = stopsLevel * _Point;
+   
+   if(isBuy && (entryPrice - stopLossPrice) < minStopDistance) {
+      stopLossPrice = entryPrice - minStopDistance;
+      Print("Adjusted SL to minimum distance: ", stopLossPrice);
    }
-   else // Sell
-   {
-      double maxTP1 = bid - minSLDistance;
-      double maxTP2 = bid - minSLDistance;
-       if(takeProfit1 > maxTP1)
-      {
-         Print("TP1 adjusted *down* to minimum distance. Old TP1: ", takeProfit1, ", New TP1: ", maxTP1);
-         takeProfit1 = maxTP1;
-      }
-      if(takeProfit2 > maxTP2)
-      {
-          Print("TP2 adjusted *down* to minimum distance. Old TP2: ", takeProfit2, ", New TP2: ", maxTP2);
-          takeProfit2 = maxTP2;
-      }
+   else if(!isBuy && (stopLossPrice - entryPrice) < minStopDistance) {
+      stopLossPrice = entryPrice + minStopDistance;
+      Print("Adjusted SL to minimum distance: ", stopLossPrice);
    }
    
-   // Normalize final TP values
-   takeProfit1 = NormalizeDouble(takeProfit1, _Digits);
-   takeProfit2 = NormalizeDouble(takeProfit2, _Digits);
-
-   Print("Final Trade Parameters:");
-   Print("  - Direction: ", isBuy ? "BUY" : "SELL");
-   Print("  - Entry Price: ", currentPrice);
-   Print("  - Stop Loss: ", stopLoss);
-   Print("  - Take Profit 1: ", takeProfit1);
-   Print("  - Take Profit 2: ", takeProfit2);
+   // Normalize lot size
+   double lotSize = NormalizeVolume(Lot_Size_1);
    
-   // Normalize lot sizes
-   double normalizedLot1 = NormalizeVolume(Lot_Size_1);
-   double normalizedLot2 = NormalizeVolume(Lot_Size_2);
+   // Prepare trade request
+   MqlTradeRequest request;
+   MqlTradeResult result;
+   ZeroMemory(request);
+   ZeroMemory(result);
    
-   if(normalizedLot1 != Lot_Size_1)
-      Print("Strategy 1-4: Lot Size 1 (", Lot_Size_1, ") adjusted to Symbol constraints: ", normalizedLot1);
-   if(normalizedLot2 != Lot_Size_2)
-      Print("Strategy 1-4: Lot Size 2 (", Lot_Size_2, ") adjusted to Symbol constraints: ", normalizedLot2);
-      
-   if(normalizedLot1 <= 0 || normalizedLot2 <= 0)
-   {
-      Print("Strategy 1-4 Error: Normalized lot size is zero or less. Cannot trade. Check input lot sizes and symbol constraints.");
-      return;
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = lotSize;
+   request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price = entryPrice;
+   request.sl = stopLossPrice;
+   request.tp = takeProfitPrice;
+   request.deviation = 10;
+   request.magic = 123456;
+   request.comment = "Strategy 1 " + string(isBuy ? "Buy" : "Sell");
+   
+   // Check current spread and warn if high
+   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread > Max_Spread) {
+      Print("Warning: High spread (", spread, ") but proceeding with trade");
    }
    
-   // Place first order
-   MqlTradeRequest request1 = {};
-   MqlTradeResult result1 = {};
+   // Send trade order
+   bool orderSent = OrderSend(request, result);
    
-   request1.action = TRADE_ACTION_DEAL;
-   request1.symbol = _Symbol;
-   request1.volume = normalizedLot1; // Use normalized volume
-   request1.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   request1.price = currentPrice;
-   request1.sl = stopLoss;
-   request1.tp = takeProfit1;
-   request1.deviation = 10;
-   request1.magic = 123456;
-   request1.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP1";
-   
-   Print("Sending first order...");
-   
-   // Check return value of OrderSend
-   bool orderSent1 = OrderSend(request1, result1);
-   if(!orderSent1 || result1.retcode != TRADE_RETCODE_DONE)
+   if(!orderSent)
    {
-      Print("First order failed. Error code: ", GetLastError(), 
-            ", Return code: ", result1.retcode, 
-            ", Message: ", result1.comment);
-      return;
+      Print("OrderSend failed. Error code: ", GetLastError());
+      return false;
    }
    
-   if(result1.retcode == TRADE_RETCODE_DONE)
+   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
    {
-      posTicket1 = result1.deal;
-      Print("First order executed successfully. Ticket: ", posTicket1);
-      
-      // Place second order
-      MqlTradeRequest request2 = {};
-      MqlTradeResult result2 = {};
-      
-      request2.action = TRADE_ACTION_DEAL;
-      request2.symbol = _Symbol;
-      request2.volume = normalizedLot2; // Use normalized volume
-      request2.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      request2.price = currentPrice;
-      request2.sl = stopLoss;
-      request2.tp = takeProfit2;
-      request2.deviation = 10;
-      request2.magic = 123456;
-      request2.comment = "Strategy " + string(isBuy ? "Buy" : "Sell") + " TP2";
-      
-      Print("Sending second order...");
-      
-      // Check return value of OrderSend
-      bool orderSent2 = OrderSend(request2, result2);
-      if(!orderSent2 || result2.retcode != TRADE_RETCODE_DONE)
-      {
-         Print("Second order failed. Error code: ", GetLastError(), 
-               ", Return code: ", result2.retcode, 
-               ", Message: ", result2.comment);
-         return;
-      }
-      
-      if(result2.retcode == TRADE_RETCODE_DONE)
-      {
-         posTicket2 = result2.deal;
-         Print("Second order executed successfully. Ticket: ", posTicket2);
-         
-         string direction = isBuy ? "BUY" : "SELL";
-         Print("Both trades executed successfully:");
-         Print("  - Direction: ", direction);
-         Print("  - First Ticket: ", posTicket1);
-         Print("  - Second Ticket: ", posTicket2);
-         Print("  - Stop Loss: ", stopLoss);
-         Print("  - Take Profit 1: ", takeProfit1);
-         Print("  - Take Profit 2: ", takeProfit2);
-      }
-      else
-      {
-         Print("Failed to execute second trade. Error: ", GetLastError());
-      }
+      Print("Order executed successfully. Ticket: ", result.order);
+      return true;
    }
    else
    {
-      Print("Failed to execute first trade. Error: ", GetLastError());
+      Print("Order execution failed. Retcode: ", result.retcode);
+      return false;
    }
 }
-
 //+------------------------------------------------------------------+
 //| Normalize volume according to symbol constraints                 |
 //+------------------------------------------------------------------+
@@ -1366,7 +1369,8 @@ double CalculateAverageBody(int period, int startIndex)
    if(CopyRates(_Symbol, PERIOD_CURRENT, startIndex, period, rates) != period)
    {
        Print("Error copying rates for Average Body calculation. Error: ", GetLastError());
-       return 0.0; // Return 0 or handle error appropriately
+       // Return 0 or handle error appropriately
+       return 0.0; 
    }
 
    // Sum the body sizes of the copied bars
@@ -1420,6 +1424,565 @@ void DrawEngulfingMarker(int barIndex, bool isBullish)
    ObjectSetInteger(0, objectName, OBJPROP_ARROWCODE, arrowCode);
    ObjectSetInteger(0, objectName, OBJPROP_COLOR, arrowColor);
    ObjectSetInteger(0, objectName, OBJPROP_WIDTH, 1);
+}
+
+//+------------------------------------------------------------------+
+//| Delete all previously drawn S/R lines                            |
+//+------------------------------------------------------------------+
+void DeleteAllSRZoneLines() 
+ {
+   // Note: Individual lines are deleted during invalidation. 
+   // This might be needed at DeInit or if a full redraw is required.
+   // For now, keep it for potential use but it's not called every tick.
+   ObjectsDeleteAll(0, "SRZone_");
+ }
+
+//+------------------------------------------------------------------+
+//| Draws the top and bottom lines for an S/R Zone                 |
+//+------------------------------------------------------------------+
+void DrawSRZoneLines(SRZone &zone) 
+ {
+    // --- Line Properties --- 
+   // Use the specific IDs stored in the zone struct
+   string topObjectName = "SRZone_" + (string)zone.chartObjectID_Top;
+   string bottomObjectName = "SRZone_" + (string)zone.chartObjectID_Bottom;
+   color zoneColor = zone.isResistance ? clrRed : clrBlue; 
+   int lineWidth = 1;
+   
+   datetime startTime = TimeCurrent() - PeriodSeconds() * 200; // Approx window start
+   datetime endTime = TimeCurrent() + PeriodSeconds() * 50;   // Extend slightly into future
+   
+   // Delete previous lines if they exist (redundant if IDs are reused correctly, but safe)
+   ObjectDelete(0, topObjectName);
+   ObjectDelete(0, bottomObjectName);
+   
+   // Create Top Boundary Line
+   if(!ObjectCreate(0, topObjectName, OBJ_HLINE, 0, 0, zone.topBoundary))
+   {   
+       Print("Error creating HLine object ", topObjectName, ": ", GetLastError());
+       return;
+   }
+   ObjectSetInteger(0, topObjectName, OBJPROP_COLOR, zoneColor);
+   ObjectSetInteger(0, topObjectName, OBJPROP_STYLE, STYLE_DOT); 
+   ObjectSetInteger(0, topObjectName, OBJPROP_WIDTH, lineWidth);
+   ObjectSetInteger(0, topObjectName, OBJPROP_BACK, true); 
+   
+   // Create Bottom Boundary Line
+   if(!ObjectCreate(0, bottomObjectName, OBJ_HLINE, 0, 0, zone.bottomBoundary))
+   {   
+       Print("Error creating HLine object ", bottomObjectName, ": ", GetLastError());
+       return;
+   }
+   ObjectSetInteger(0, bottomObjectName, OBJPROP_COLOR, zoneColor);
+   ObjectSetInteger(0, bottomObjectName, OBJPROP_STYLE, STYLE_DOT); 
+   ObjectSetInteger(0, bottomObjectName, OBJPROP_WIDTH, lineWidth);
+   ObjectSetInteger(0, bottomObjectName, OBJPROP_BACK, true); 
+   
+   // Redraw chart
+   ChartRedraw();
+ }
+
+//+------------------------------------------------------------------+
+//| Checks if a zone exists based on defining close proximity       |
+//+------------------------------------------------------------------+
+bool ZoneExists(double definingClose, SRZone &existingZones[], int sensitivityPips) 
+ {
+     double sensitivityValue = sensitivityPips * _Point;
+     for(int i = 0; i < ArraySize(existingZones); i++)
+     {
+         // Compare the potential new zone's defining close with existing zones' defining closes
+         if(MathAbs(definingClose - existingZones[i].definingClose) < sensitivityValue)
+         {   
+             return true; // Found a zone within the sensitivity zone
+          }
+     }
+     return false; // No close zone found
+ }
+
+//+------------------------------------------------------------------+
+//| Update, Validate, and Draw S/R Zones (Based on Local Closes)     |
+//+------------------------------------------------------------------+
+void UpdateAndDrawValidSRZones() 
+{
+   Print("Updating S/R Zones...");
+   
+   // --- Parameters --- 
+   int lookback = SR_Lookback;
+   int sensitivityPips = SR_Sensitivity_Pips;
+   double sensitivityValue = sensitivityPips * _Point;
+   
+   // --- Get Data --- 
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   // Need lookback + 1 for neighbor checks, +1 for invalidation check bar (index 1)
+   int ratesNeeded = lookback + 2;
+   if (CopyRates(_Symbol, PERIOD_CURRENT, 0, ratesNeeded, rates) < ratesNeeded)
+   {   
+       Print("UpdateAndDrawValidSRZones Error: Could not copy rates. Error: ", GetLastError());
+       // Clear levels on error to avoid using stale data
+       ArrayFree(g_activeSupportZones);
+       ArrayFree(g_activeResistanceZones);
+       g_nearestSupportZoneIndex = -1;
+       g_nearestResistanceZoneIndex = -1;
+       DeleteAllSRZoneLines(); 
+       return;
+   }
+   
+   // Get the close of the last completed bar for invalidation check
+   double closeBar1 = rates[1].close;
+   double closeBar2 = rates[2].close; // Also get close of bar 2 for recent break check
+   
+   // --- 1. Invalidate Zones Crossed by Previous Bar's Close --- 
+   
+   // Invalidate Resistance: Remove if close[1] closed ABOVE the zone's TOP boundary
+   int activeResSize = ArraySize(g_activeResistanceZones);
+   for(int i = activeResSize - 1; i >= 0; i--) // Iterate backwards when removing
+   {
+       // Add tolerance: Invalidate only if close is clearly ABOVE level + 1 point
+       if(closeBar1 > g_activeResistanceZones[i].topBoundary + _Point)
+       {  
+           Print("S/R Zone Invalidation: Resistance Zone (", g_activeResistanceZones[i].bottomBoundary, "-", g_activeResistanceZones[i].topBoundary, ") invalidated by Bar 1 close (", closeBar1, ")");
+           // Delete the specific chart objects for this zone before removing from array
+           ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Top);
+           ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Bottom);
+           
+           // Remove element efficiently (replace with last, then resize)
+           if (i < activeResSize - 1)
+           { 
+               g_activeResistanceZones[i] = g_activeResistanceZones[activeResSize - 1];
+           }
+           ArrayResize(g_activeResistanceZones, activeResSize - 1);
+           activeResSize--; // Update size immediately
+       }
+   }
+   
+   // Invalidate Support: Remove if close[1] closed BELOW the zone's BOTTOM boundary
+   int activeSupSize = ArraySize(g_activeSupportZones);
+   for(int i = activeSupSize - 1; i >= 0; i--)
+   {
+       // Add tolerance: Invalidate only if close is clearly BELOW level - 1 point
+       if(closeBar1 < g_activeSupportZones[i].bottomBoundary - _Point)
+       {  
+           Print("S/R Zone Invalidation: Support Zone (", g_activeSupportZones[i].bottomBoundary, "-", g_activeSupportZones[i].topBoundary, ") invalidated by Bar 1 close (", closeBar1, ")");
+           // Delete the specific chart objects for this zone
+           ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Top);
+           ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Bottom);
+           
+           if (i < activeSupSize - 1)
+           { 
+               g_activeSupportZones[i] = g_activeSupportZones[activeSupSize - 1];
+           }
+           ArrayResize(g_activeSupportZones, activeSupSize - 1);
+           activeSupSize--;
+       }
+   }
+   
+   // --- 2. Find New Potential Zones using Local Closes --- 
+   
+   // Temporary arrays to hold the BAR INDEX (relative to 'rates' array) where potential zones are defined
+   int potentialResIndices[]; 
+   int potentialSupIndices[];
+   int potentialResCount = 0;
+   int potentialSupCount = 0;
+   
+   // Scan from index 1 up to lookback-1 to allow checking neighbours rates[i-1] and rates[i+1]
+   for(int i = 1; i < lookback; i++)
+   {      
+      // Check for local high close (potential Resistance)
+      if(rates[i].close > rates[i-1].close && rates[i].close > rates[i+1].close)
+      {       
+         // Store the index 'i'
+         ArrayResize(potentialResIndices, potentialResCount + 1);
+         potentialResIndices[potentialResCount] = i;
+         potentialResCount++;
+      }
+      
+      // Check for local low close (potential Support)
+      if(rates[i].close < rates[i-1].close && rates[i].close < rates[i+1].close)
+      {      
+         // Store the index 'i'
+         ArrayResize(potentialSupIndices, potentialSupCount + 1);
+         potentialSupIndices[potentialSupCount] = i; 
+         potentialSupCount++;
+      }
+   }
+   
+   // --- 3. Add New Valid Zones (checking sensitivity vs *existing* active zones AND recent breaks) --- 
+   
+   // Add potential Resistance zones if they aren't too close to existing *active* ones
+   for(int idx = 0; idx < potentialResCount; idx++)
+   {   
+      int potentialIndex = potentialResIndices[idx]; // Index in 'rates' array
+      // Ensure potentialIndex allows access to neighbours rates[potentialIndex +/- 1]
+      if (potentialIndex < 1 || potentialIndex >= ratesNeeded -1) continue; 
+      
+      double potentialDefiningClose = rates[potentialIndex].close;
+
+      bool exists = false;
+      // Check sensitivity against existing ACTIVE zones
+      for(int j=0; j<ArraySize(g_activeResistanceZones); j++)
+      {
+         if(MathAbs(potentialDefiningClose - g_activeResistanceZones[j].definingClose) < sensitivityValue)
+         {   
+             exists = true;
+             break;
+          }
+      }
+      if (exists) continue; // Skip if too close to an existing active zone
+      
+      // Check: Was this potential zone's TOP boundary broken clearly by close[1] or close[2]?
+      bool brokenRecently = false;
+      // Resistance Top Boundary = max(high[i-1], high[i], high[i+1])
+      double potentialTopBoundary = MathMax(rates[potentialIndex+1].high, MathMax(rates[potentialIndex].high, rates[potentialIndex-1].high));
+      if (closeBar1 > potentialTopBoundary + _Point || closeBar2 > potentialTopBoundary + _Point) 
+      { 
+          brokenRecently = true;
+          PrintFormat("S/R Filtering: Potential Resistance (Close: %.5f, Top: %.5f) ignored - broken by close[1](%.5f) or close[2](%.5f).", 
+                      potentialDefiningClose, potentialTopBoundary, closeBar1, closeBar2);
+      }
+       
+      // Add only if it doesn't exist AND wasn't broken recently
+      if(!brokenRecently) // 'exists' check already done with 'continue'
+      {  
+         // Create the SRZone object
+         SRZone newZone;
+         newZone.definingClose = potentialDefiningClose;
+         newZone.bottomBoundary = potentialDefiningClose; // Resistance bottom = defining close
+         newZone.topBoundary = potentialTopBoundary;      // Calculated above
+         newZone.isResistance = true;
+         newZone.touchCount = 1; // Initial formation counts as the first touch
+         // Generate unique IDs
+         newZone.chartObjectID_Top = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.topBoundary * 1e5)); 
+         newZone.chartObjectID_Bottom = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.bottomBoundary * 1e5)) + 1; 
+
+         PrintFormat("S/R Detection: Adding new Resistance Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f", 
+                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary);
+                     
+         int curSize = ArraySize(g_activeResistanceZones);
+         ArrayResize(g_activeResistanceZones, curSize + 1);
+         g_activeResistanceZones[curSize] = newZone; // Add the struct object
+      }
+   }
+   
+   // Add potential Support zones if they aren't too close to existing *active* ones
+   for(int idx = 0; idx < potentialSupCount; idx++)
+   {   
+      int potentialIndex = potentialSupIndices[idx]; // Index in 'rates' array
+      // Ensure potentialIndex allows access to neighbours rates[potentialIndex +/- 1]
+      if (potentialIndex < 1 || potentialIndex >= ratesNeeded -1) continue; 
+      
+      double potentialDefiningClose = rates[potentialIndex].close;
+
+      bool exists = false;
+      // Check sensitivity against existing ACTIVE zones
+      for(int j=0; j<ArraySize(g_activeSupportZones); j++)
+      {
+         if(MathAbs(potentialDefiningClose - g_activeSupportZones[j].definingClose) < sensitivityValue)
+         {   
+             exists = true;
+             break;
+          }
+      }
+      if (exists) continue; // Skip if too close to an existing active zone
+      
+      // Check: Was this potential zone's BOTTOM boundary broken clearly by close[1] or close[2]?
+      bool brokenRecently = false;
+      // Support Bottom Boundary = min(low[i-1], low[i], low[i+1])
+      double potentialBottomBoundary = MathMin(rates[potentialIndex+1].low, MathMin(rates[potentialIndex].low, rates[potentialIndex-1].low));
+      if (closeBar1 < potentialBottomBoundary - _Point || closeBar2 < potentialBottomBoundary - _Point) 
+      { 
+          brokenRecently = true;
+          PrintFormat("S/R Filtering: Potential Support (Close: %.5f, Bottom: %.5f) ignored - broken by close[1](%.5f) or close[2](%.5f).", 
+                      potentialDefiningClose, potentialBottomBoundary, closeBar1, closeBar2);
+      }
+       
+      // Add only if it doesn't exist AND wasn't broken recently
+      if(!brokenRecently) // 'exists' check already done with 'continue'
+      {  
+         // Create the SRZone object
+         SRZone newZone;
+         newZone.definingClose = potentialDefiningClose;
+         newZone.topBoundary = potentialDefiningClose;    // Support top = defining close
+         newZone.bottomBoundary = potentialBottomBoundary; // Calculated above
+         newZone.isResistance = false;
+         newZone.touchCount = 1; // Initial formation counts as the first touch
+         // Generate unique IDs
+         newZone.chartObjectID_Top = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.topBoundary * 1e5));
+         newZone.chartObjectID_Bottom = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.bottomBoundary * 1e5)) + 1;
+
+         PrintFormat("S/R Detection: Adding new Support Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f", 
+                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary);
+                     
+         int curSize = ArraySize(g_activeSupportZones);
+         ArrayResize(g_activeSupportZones, curSize + 1);
+         g_activeSupportZones[curSize] = newZone; // Add the struct object
+      }
+   }
+   
+   // Sort the active zones (optional, but helps finding nearest)
+   // NOTE: ArraySort might not work directly on arrays of structs unless a comparison function is provided.
+   // Remove sorting for now to avoid potential issues.
+   // ArraySort(g_activeResistanceZones);
+   // ArraySort(g_activeSupportZones);
+   
+   // --- 4. Detect Touches on Active Zones (Using Bar 1 & Bar 2) --- // MODIFIED
+   double touchSensitivityValue = (double)SR_Sensitivity_Pips * _Point; // Sensitivity for touch detection
+
+   // Check Resistance Zones for touches
+   activeResSize = ArraySize(g_activeResistanceZones); // Get current size again
+   for(int i = 0; i < activeResSize; i++)
+   { 
+      // Check if bar 1 high approached the top boundary
+      if(MathAbs(rates[1].high - g_activeResistanceZones[i].topBoundary) <= touchSensitivityValue)
+      {
+         // Check if bar 1 close did NOT break the top boundary
+         // AND check if bar 2 close was ALSO below the top boundary (ensuring separation)
+         if(rates[1].close < g_activeResistanceZones[i].topBoundary + _Point &&
+            rates[2].close < g_activeResistanceZones[i].topBoundary + _Point) // <<< ADDED CHECK FOR BAR 2
+         {
+            g_activeResistanceZones[i].touchCount++;
+            PrintFormat("S/R Touch: Resistance Zone (Index %d, DefC=%.5f, Top=%.5f) touched by Bar 1 High (%.5f) with Bar 2 Sep. New Count: %d", 
+                        i, g_activeResistanceZones[i].definingClose, g_activeResistanceZones[i].topBoundary, rates[1].high, g_activeResistanceZones[i].touchCount);
+         }
+      }
+   }
+
+   // Check Support Zones for touches
+   activeSupSize = ArraySize(g_activeSupportZones); // Get current size again
+   for(int i = 0; i < activeSupSize; i++)
+   {
+      // Check if bar 1 low approached the bottom boundary
+      if(MathAbs(rates[1].low - g_activeSupportZones[i].bottomBoundary) <= touchSensitivityValue)
+      {
+         // Check if bar 1 close did NOT break the bottom boundary
+         // AND check if bar 2 close was ALSO above the bottom boundary (ensuring separation)
+         if(rates[1].close > g_activeSupportZones[i].bottomBoundary - _Point &&
+            rates[2].close > g_activeSupportZones[i].bottomBoundary - _Point) // <<< ADDED CHECK FOR BAR 2
+         {
+            g_activeSupportZones[i].touchCount++;
+            PrintFormat("S/R Touch: Support Zone (Index %d, DefC=%.5f, Bottom=%.5f) touched by Bar 1 Low (%.5f) with Bar 2 Sep. New Count: %d", 
+                        i, g_activeSupportZones[i].definingClose, g_activeSupportZones[i].bottomBoundary, rates[1].low, g_activeSupportZones[i].touchCount);
+         }
+      }
+   }
+   
+   // --- 5. Clear Old Lines and Draw Current Valid Zones --- 
+   // DeleteAllSRZoneLines(); // <<< Lines are deleted during invalidation or filtering now
+   // Redraw ALL active zones first before filtering
+   for(int i = 0; i < ArraySize(g_activeResistanceZones); i++) DrawSRZoneLines(g_activeResistanceZones[i]); 
+   for(int i = 0; i < ArraySize(g_activeSupportZones); i++) DrawSRZoneLines(g_activeSupportZones[i]); 
+   
+   // --- 6. Filter Zones to Keep All Valid Zones (No Limit) --- 
+   double currentPrice = rates[0].close; // Current bar's close
+   if (currentPrice == 0) 
+   { 
+       Print("UpdateAndDrawValidSRZones Warning: Could not get current price (bar 0 close) for filtering.");
+       // Skip filtering if price is invalid, but proceed to find nearest from unfiltered list
+   }
+   else
+   {
+       // --- Filter Resistance Zones (Keep all valid zones above current price) ---
+       SRZone tempResistanceZones[];
+       double tempResistanceDistances[];
+       int tempResCount = 0;
+
+       // Collect valid resistance zones above current price and their distances
+       for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+       {
+           if (g_activeResistanceZones[i].topBoundary > currentPrice)
+           {
+               ArrayResize(tempResistanceZones, tempResCount + 1);
+               ArrayResize(tempResistanceDistances, tempResCount + 1);
+               tempResistanceZones[tempResCount] = g_activeResistanceZones[i];
+               tempResistanceDistances[tempResCount] = g_activeResistanceZones[i].topBoundary - currentPrice; // Distance to top boundary
+               tempResCount++;
+           }
+       }
+
+       // Sort collected zones by distance (simple bubble sort for small array)
+       for (int i = 0; i < tempResCount - 1; i++)
+       {
+           for (int j = 0; j < tempResCount - i - 1; j++)
+           {
+               if (tempResistanceDistances[j] > tempResistanceDistances[j + 1])
+               {
+                   // Swap distances
+                   double tempDist = tempResistanceDistances[j];
+                   tempResistanceDistances[j] = tempResistanceDistances[j + 1];
+                   tempResistanceDistances[j + 1] = tempDist;
+                   // Swap zones
+                   SRZone tempZone = tempResistanceZones[j];
+                   tempResistanceZones[j] = tempResistanceZones[j + 1];
+                   tempResistanceZones[j + 1] = tempZone;
+               }
+           }
+       }
+
+       // Keep all zones - no filtering by count
+       SRZone finalResistanceZones[];
+       int finalResCount = tempResCount;
+       ArrayResize(finalResistanceZones, finalResCount);
+
+       // Copy all zones to the final array
+       for (int i = 0; i < finalResCount; i++)
+       {
+           finalResistanceZones[i] = tempResistanceZones[i];
+           PrintFormat("S/R: Keeping Resistance Zone (Dist: %.5f, Top: %.5f)", tempResistanceDistances[i], finalResistanceZones[i].topBoundary);
+       }
+       
+       // Remove chart objects for zones NOT kept
+       for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+       {
+           bool found = false;
+           for (int k = 0; k < finalResCount; k++)
+           {
+               if (g_activeResistanceZones[i].chartObjectID_Top == finalResistanceZones[k].chartObjectID_Top)
+               {
+                   found = true;
+                   break;
+               }
+           }
+           if (!found)
+           {
+               PrintFormat("S/R Filtering: Removing Resistance Zone (Top: %.5f)", g_activeResistanceZones[i].topBoundary);
+               ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Top);
+               ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Bottom);
+           }
+       }
+       
+       // Update the global array
+       ArrayFree(g_activeResistanceZones);
+       if(ArraySize(finalResistanceZones) > 0)
+       {
+           ArrayResize(g_activeResistanceZones, ArraySize(finalResistanceZones));
+           for(int i = 0; i < ArraySize(finalResistanceZones); i++)
+           {
+               g_activeResistanceZones[i] = finalResistanceZones[i];
+           }
+       }
+
+       // --- Filter Support Zones (Keep all valid zones below current price) ---
+       SRZone tempSupportZones[];
+       double tempSupportDistances[];
+       int tempSupCount = 0;
+
+       // Collect valid support zones below current price and their distances
+       for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
+       {
+           if (g_activeSupportZones[i].bottomBoundary < currentPrice)
+           {
+               ArrayResize(tempSupportZones, tempSupCount + 1);
+               ArrayResize(tempSupportDistances, tempSupCount + 1);
+               tempSupportZones[tempSupCount] = g_activeSupportZones[i];
+               tempSupportDistances[tempSupCount] = currentPrice - g_activeSupportZones[i].bottomBoundary; // Distance to bottom boundary
+               tempSupCount++;
+           }
+       }
+
+       // Sort collected zones by distance (simple bubble sort)
+       for (int i = 0; i < tempSupCount - 1; i++)
+       {
+           for (int j = 0; j < tempSupCount - i - 1; j++)
+           {
+               if (tempSupportDistances[j] > tempSupportDistances[j + 1])
+               {
+                   // Swap distances
+                   double tempDist = tempSupportDistances[j];
+                   tempSupportDistances[j] = tempSupportDistances[j + 1];
+                   tempSupportDistances[j + 1] = tempDist;
+                   // Swap zones
+                   SRZone tempZone = tempSupportZones[j];
+                   tempSupportZones[j] = tempSupportZones[j + 1];
+                   tempSupportZones[j + 1] = tempZone;
+               }
+           }
+       }
+
+       // Keep all zones - no filtering by count
+       SRZone finalSupportZones[];
+       int finalSupCount = tempSupCount;
+       ArrayResize(finalSupportZones, finalSupCount);
+
+       // Copy all zones to the final array
+       for (int i = 0; i < finalSupCount; i++)
+       {
+           finalSupportZones[i] = tempSupportZones[i];
+           PrintFormat("S/R: Keeping Support Zone (Dist: %.5f, Bottom: %.5f)", tempSupportDistances[i], finalSupportZones[i].bottomBoundary);
+       }
+
+       // Remove chart objects for zones NOT kept
+       for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
+       {
+           bool found = false;
+           for (int k = 0; k < finalSupCount; k++)
+           {
+               if (g_activeSupportZones[i].chartObjectID_Bottom == finalSupportZones[k].chartObjectID_Bottom)
+               {
+                   found = true;
+                   break;
+               }
+           }
+           if (!found)
+           {
+               PrintFormat("S/R Filtering: Removing Support Zone (Bottom: %.5f)", g_activeSupportZones[i].bottomBoundary);
+               ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Top);
+               ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Bottom);
+           }
+       }
+
+       // Update the global array
+       ArrayFree(g_activeSupportZones);
+       if(ArraySize(finalSupportZones) > 0)
+       {
+           ArrayResize(g_activeSupportZones, ArraySize(finalSupportZones));
+           for(int i = 0; i < ArraySize(finalSupportZones); i++)
+           {
+               g_activeSupportZones[i] = finalSupportZones[i];
+           }
+       }
+   } // End of filtering block (if currentPrice is valid)
+   
+   // --- 7. Find and Store Nearest Valid S/R Zone Index to Current Price (from FILTERED list) --- // RENUMBERED STEP
+   g_nearestSupportZoneIndex = -1;
+   g_nearestResistanceZoneIndex = -1;
+   
+   // Find nearest support zone index (highest bottom boundary BELOW current price)
+   double maxSupportBottomBelowPrice = 0.0;
+   int bestSupportIndex = -1;
+   for(int i = 0; i < ArraySize(g_activeSupportZones); i++)
+   {   
+       // Check zone's bottom boundary relative to current price
+       if(g_activeSupportZones[i].bottomBoundary < currentPrice)
+       {   
+           if(g_activeSupportZones[i].bottomBoundary > maxSupportBottomBelowPrice)
+           {   
+               maxSupportBottomBelowPrice = g_activeSupportZones[i].bottomBoundary;
+               bestSupportIndex = i;
+           }
+       }
+   }
+   g_nearestSupportZoneIndex = bestSupportIndex;
+   
+   // Find nearest resistance zone index (lowest top boundary ABOVE current price)
+   double minResistanceTopAbovePrice = 0.0;
+   int bestResistanceIndex = -1;
+   for(int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+   {   
+       // Check zone's top boundary relative to current price
+       if(g_activeResistanceZones[i].topBoundary > currentPrice)
+       {   
+           if(bestResistanceIndex == -1 || g_activeResistanceZones[i].topBoundary < minResistanceTopAbovePrice)
+           {   
+               minResistanceTopAbovePrice = g_activeResistanceZones[i].topBoundary;
+               bestResistanceIndex = i;
+           }
+       }
+   }
+   g_nearestResistanceZoneIndex = bestResistanceIndex;
+   
+   Print("S/R Zone Update Complete. Active Support Zones: ", ArraySize(g_activeSupportZones), " Active Resistance Zones: ", ArraySize(g_activeResistanceZones));
+   Print("  -> Nearest Support Index: ", g_nearestSupportZoneIndex, " (Bottom: ", (g_nearestSupportZoneIndex != -1 ? DoubleToString(g_activeSupportZones[g_nearestSupportZoneIndex].bottomBoundary, _Digits) : "N/A"), ")");
+   Print("  -> Nearest Resistance Index: ", g_nearestResistanceZoneIndex, " (Top: ", (g_nearestResistanceZoneIndex != -1 ? DoubleToString(g_activeResistanceZones[g_nearestResistanceZoneIndex].topBoundary, _Digits) : "N/A"), ")");
 }
 
 //+------------------------------------------------------------------+
