@@ -556,7 +556,25 @@ bool CheckStrategy1()
                    PrintFormat("Strategy 1 skipped: Active BUY trade from same support level (%.5f) exists.", g_strat1_active_buy_sl_level);
                    return false;
                }
-
+               
+               // After confirming bullishEngulfing and before executing the trade
+// Check if support was breached between crossover (bar 1) and current bar (bar 0)
+bool supportBreached = false;
+for(int i = 1; i >= 0; i--) // Check bars 1 and 0
+{
+    double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
+    if(barLow <= nearestSupport.bottomBoundary)
+    {
+        supportBreached = true;
+        PrintFormat("Strategy 1: Support breached at bar %d (Low=%.5f <= Support=%.5f)", i, barLow, nearestSupport.bottomBoundary);
+        break;
+    }
+}
+if(supportBreached)
+{
+    Print("Strategy 1: BUY setup invalidated - Support level breached post-crossover.");
+    return false; // Skip trade
+}
                PrintFormat("Strategy 1: Nearest Support found (Bottom=%.5f). Triggering BUY.", nearestSupport.bottomBoundary);
                ExecuteTradeStrategy1(true, nearestSupport.bottomBoundary); // Pass BUY signal and support bottom for SL calc
                return true; // Trade attempted
@@ -606,6 +624,24 @@ bool CheckStrategy1()
                    PrintFormat("Strategy 1 skipped: Active SELL trade from same resistance level (%.5f) exists.", g_strat1_active_sell_sl_level);
                    return false;
                }
+               // After confirming bearishEngulfing and before executing the trade
+// Check if resistance was breached between crossover (bar 1) and current bar (bar 0)
+bool resistanceBreached = false;
+for(int i = 1; i >= 0; i--) // Check bars 1 and 0
+{
+    double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
+    if(barHigh >= nearestResistance.topBoundary)
+    {
+        resistanceBreached = true;
+        PrintFormat("Strategy 1: Resistance breached at bar %d (High=%.5f >= Resistance=%.5f)", i, barHigh, nearestResistance.topBoundary);
+        break;
+    }
+}
+if(resistanceBreached)
+{
+    Print("Strategy 1: SELL setup invalidated - Resistance level breached post-crossover.");
+    return false; // Skip trade
+}
 
                PrintFormat("Strategy 1: Nearest Resistance found (Top=%.5f). Triggering SELL.", nearestResistance.topBoundary);
                ExecuteTradeStrategy1(false, nearestResistance.topBoundary); // Pass SELL signal and resistance top for SL calc
