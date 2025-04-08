@@ -1985,6 +1985,7 @@ void UpdateAndDrawValidSRZones()
    bool foundNewCross = false;
    double crossPrice = 0.0;
    bool crossAbove = false;
+   int crossIndex = -1;
    
    for(int i = 1; i < lookback; i++)
    {
@@ -1992,23 +1993,31 @@ void UpdateAndDrawValidSRZones()
       
       double prevClose = rates[i+1].close;
       double currClose = rates[i].close;
+      double prevOpen = rates[i+1].open;
+      double currOpen = rates[i].open;
       double prevEma = emaValues[i+1];
       double currEma = emaValues[i];
       
-      // Check for price crossing above EMA
-      if(prevClose <= prevEma && currClose > currEma)
+      // Check for price crossing above EMA (both open and close must be above)
+      if(prevClose <= prevEma && prevOpen <= prevEma && currClose > currEma && currOpen > currEma)
       {
          foundNewCross = true;
          crossPrice = currClose;
          crossAbove = true;
+         crossIndex = i;
+         PrintFormat("Found bullish EMA crossover at bar %d: Open=%.5f, Close=%.5f, EMA=%.5f", 
+                    i, currOpen, currClose, currEma);
          break;
       }
-      // Check for price crossing below EMA
-      else if(prevClose >= prevEma && currClose < currEma)
+      // Check for price crossing below EMA (both open and close must be below)
+      else if(prevClose >= prevEma && prevOpen >= prevEma && currClose < currEma && currOpen < currEma)
       {
          foundNewCross = true;
          crossPrice = currClose;
          crossAbove = false;
+         crossIndex = i;
+         PrintFormat("Found bearish EMA crossover at bar %d: Open=%.5f, Close=%.5f, EMA=%.5f", 
+                    i, currOpen, currClose, currEma);
          break;
       }
    }
@@ -2018,8 +2027,9 @@ void UpdateAndDrawValidSRZones()
    {
       g_lastEmaCrossPrice = crossPrice;
       g_lastEmaCrossAbove = crossAbove;
-      PrintFormat("New EMA crossover detected: Price %s EMA at %.5f", 
-                  crossAbove ? "crossed above" : "crossed below", crossPrice);
+      PrintFormat("New EMA crossover detected: Price %s EMA at %.5f (Open=%.5f, Close=%.5f, EMA=%.5f)", 
+                  crossAbove ? "crossed above" : "crossed below", crossPrice,
+                  rates[crossIndex].open, rates[crossIndex].close, emaValues[crossIndex]);
    }
    
    // Temporary arrays to hold the BAR INDEX (relative to 'rates' array) where potential zones are defined
@@ -2034,24 +2044,34 @@ void UpdateAndDrawValidSRZones()
       // Check for local high close (potential Resistance)
       if(rates[i].close > rates[i-1].close && rates[i].close > rates[i+1].close)
       {       
-         // Only add if we have a valid EMA crossover and price is above EMA
-         if(foundNewCross && rates[i].close > emaValues[i])
+         // For resistance zones, we need either:
+         // 1. A bullish EMA crossover and price above EMA, or
+         // 2. Price already above EMA and continuing to make higher highs
+         if((foundNewCross && crossAbove && rates[i].close > emaValues[i] && rates[i].open > emaValues[i]) ||
+            (!foundNewCross && rates[i].close > emaValues[i] && rates[i].open > emaValues[i]))
          {
             ArrayResize(potentialResIndices, potentialResCount + 1);
             potentialResIndices[potentialResCount] = i;
             potentialResCount++;
+            PrintFormat("Found potential resistance zone at bar %d: Open=%.5f, Close=%.5f, EMA=%.5f", 
+                       i, rates[i].open, rates[i].close, emaValues[i]);
          }
       }
       
       // Check for local low close (potential Support)
       if(rates[i].close < rates[i-1].close && rates[i].close < rates[i+1].close)
       {      
-         // Only add if we have a valid EMA crossover and price is below EMA
-         if(foundNewCross && rates[i].close < emaValues[i])
+         // For support zones, we need either:
+         // 1. A bearish EMA crossover and price below EMA, or
+         // 2. Price already below EMA and continuing to make lower lows
+         if((foundNewCross && !crossAbove && rates[i].close < emaValues[i] && rates[i].open < emaValues[i]) ||
+            (!foundNewCross && rates[i].close < emaValues[i] && rates[i].open < emaValues[i]))
          {
             ArrayResize(potentialSupIndices, potentialSupCount + 1);
             potentialSupIndices[potentialSupCount] = i; 
             potentialSupCount++;
+            PrintFormat("Found potential support zone at bar %d: Open=%.5f, Close=%.5f, EMA=%.5f", 
+                       i, rates[i].open, rates[i].close, emaValues[i]);
          }
       }
    }
@@ -2794,7 +2814,7 @@ bool ExecuteTradeStrategy1(bool isBuy, double slZoneBoundary)
             if (!OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lotSize, entryPrice, marginRequired))
             {
                 Print("ExecuteTradeStrategy1 Error: OrderCalcMargin failed for minimum lot size. Error: ", GetLastError());
-                return false;
+                return false; // Abort if calculation fails
             }
 
             PrintFormat("ExecuteTradeStrategy1: Margin check for minimum lot %.5f. Required: %.2f, Available Free: %.2f",
