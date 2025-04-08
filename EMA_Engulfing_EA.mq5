@@ -73,7 +73,8 @@ input bool        Engulfing_Use_Trend_Filter = false; // ENABLED BY DEFAULT: Use
 input int         SR_Lookback = 10;       // Number of candles to look back for S/R zones
 input int         SR_Sensitivity_Pips = 3;    // Min distance between S/R zone defining closes (RELAXED to 3)
 input double      SL_Fallback_Pips = 15;   // SL distance in pips when zone boundary is not used (Increased default further)
-input int         SR_Min_Touches = 1;       // Minimum touches required for a zone to be tradable (RELAXED to 1)
+// input int         SR_Min_Touches = 1;       // Minimum touches required for a zone to be tradable (RELAXED to 1)
+const int         SR_Min_Touches = 2;      // Fixed minimum touches required for a zone to be tradable
 input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven for Strats 1-3 (0=disabled)
 input bool        Use_Breakeven_Logic = true; // NEW: Enable/Disable automatic breakeven adjustment in OnTimer
 
@@ -124,6 +125,10 @@ datetime g_lastTradeTimeStrat2 = 0;
 datetime g_lastTradeTimeStrat3 = 0;
 datetime g_lastTradeTimeStrat4 = 0;
 datetime g_lastTradeTimeStrat5 = 0;
+
+// Add these global variables at the top with other globals
+double g_lastEmaCrossPrice = 0.0;  // Price at last EMA crossover
+bool g_lastEmaCrossAbove = false;  // True if last cross was price crossing above EMA
 
 //+------------------------------------------------------------------+
 //| SR Zone Struct                                                   |
@@ -741,7 +746,32 @@ bool CheckStrategy2()
             // SL based on the CLOSE of the bullish engulfing candle (bar 1)
             double engulfingCloseSLBase = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck); // shiftToCheck is 1
             PrintFormat("  - SL Base: Bullish Engulfing Close[1]=%.5f", engulfingCloseSLBase);
-            ExecuteTrade(2, MAGIC_STRAT_2, true, targetResistanceTop, engulfingCloseSLBase);
+            
+            // Get broker's minimum stop distance
+            int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double minStopDistance = stopsLevel * _Point;
+            // Add a small buffer (1 point) to account for spread and slippage
+            minStopDistance += _Point;
+            
+            // Calculate entry price
+            double entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            
+            // Log broker's requirements
+            Print("  - Broker's Stop Level: ", stopsLevel);
+            Print("  - Broker's Min Distance: ", minStopDistance);
+            Print("  - Entry Price: ", entryPrice);
+            
+            // Let the broker's system handle the stop loss placement
+            double proposedSL = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);
+            Print("  - Original SL based on engulfing close: ", proposedSL);
+            
+            // Try to execute trade with original SL
+            if(!ExecuteTrade(2, MAGIC_STRAT_2, true, targetResistanceTop, proposedSL)) {
+               // If trade fails, try with a wider stop loss
+               double widerSL = entryPrice - (minStopDistance * 2); // Double the minimum distance
+               Print("  - Trade failed, trying with wider SL: ", widerSL);
+               ExecuteTrade(2, MAGIC_STRAT_2, true, targetResistanceTop, widerSL);
+            }
             return true; // Trade executed
          }
       }
@@ -1339,6 +1369,16 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
    // Calculate TP based on entry price and twice the distance from EMA to the tested zone
    double takeProfitPrice = isBuy ? entryPrice + (2 * distance_EMA_to_TestedZone) : entryPrice - (2 * distance_EMA_to_TestedZone);
    
+   // Ensure TP is correctly positioned relative to entry price
+   if(isBuy && takeProfitPrice <= entryPrice) {
+      takeProfitPrice = entryPrice + (2 * distance_EMA_to_TestedZone);
+      Print("ExecuteTrade: Adjusted BUY take profit to be above entry price. New TP: ", takeProfitPrice);
+   }
+   else if(!isBuy && takeProfitPrice >= entryPrice) {
+      takeProfitPrice = entryPrice - (2 * distance_EMA_to_TestedZone);
+      Print("ExecuteTrade: Adjusted SELL take profit to be below entry price. New TP: ", takeProfitPrice);
+   }
+   
    // Calculate stop loss - use 10% of account balance if no zone boundary provided
    double stopLossPrice;
    if(zoneBoundary != 0.0) { // SL is exactly at the provided level (e.g., engulfing close for Strat 2)
@@ -1352,18 +1392,68 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
       stopLossPrice = isBuy ? entryPrice - stopDistance : entryPrice + stopDistance;
    }
    
-   // Check if SL is too close (less than stops level)
+   // Get broker's minimum stop distance
    int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minStopDistance = stopsLevel * _Point;
+   // Add a small buffer (1 point) to account for spread and slippage
+   minStopDistance += _Point;
    
-   if(isBuy && (entryPrice - stopLossPrice) < minStopDistance) {
-      stopLossPrice = entryPrice - minStopDistance;
-      Print("Adjusted SL to minimum distance: ", stopLossPrice);
+   // Check if our calculated SL/TP meet broker's requirements
+   if(isBuy) {
+      // For buy orders, SL must be below entry and TP above entry
+      if(stopLossPrice >= entryPrice) {
+         Print("ExecuteTrade Error: Stop loss (", stopLossPrice, ") is not below entry price (", entryPrice, ") for BUY order");
+         return false;
+      }
+      if(takeProfitPrice <= entryPrice) {
+         Print("ExecuteTrade Error: Take profit (", takeProfitPrice, ") is not above entry price (", entryPrice, ") for BUY order");
+         return false;
+      }
+      
+      // Check if distances meet broker's requirements
+      double slDistance = entryPrice - stopLossPrice;
+      double tpDistance = takeProfitPrice - entryPrice;
+      
+      if(slDistance < minStopDistance) {
+         stopLossPrice = entryPrice - minStopDistance;
+         Print("ExecuteTrade: Adjusted stop loss to meet broker's minimum distance: ", stopLossPrice);
+      }
+      if(tpDistance < minStopDistance) {
+         takeProfitPrice = entryPrice + minStopDistance;
+         Print("ExecuteTrade: Adjusted take profit to meet broker's minimum distance: ", takeProfitPrice);
+      }
+   } else {
+      // For sell orders, SL must be above entry and TP below entry
+      if(stopLossPrice <= entryPrice) {
+         Print("ExecuteTrade Error: Stop loss (", stopLossPrice, ") is not above entry price (", entryPrice, ") for SELL order");
+         return false;
+      }
+      if(takeProfitPrice >= entryPrice) {
+         Print("ExecuteTrade Error: Take profit (", takeProfitPrice, ") is not below entry price (", entryPrice, ") for SELL order");
+         return false;
+      }
+      
+      // Check if distances meet broker's requirements
+      double slDistance = stopLossPrice - entryPrice;
+      double tpDistance = entryPrice - takeProfitPrice;
+      
+      if(slDistance < minStopDistance) {
+         stopLossPrice = entryPrice + minStopDistance;
+         Print("ExecuteTrade: Adjusted stop loss to meet broker's minimum distance: ", stopLossPrice);
+      }
+      if(tpDistance < minStopDistance) {
+         takeProfitPrice = entryPrice - minStopDistance;
+         Print("ExecuteTrade: Adjusted take profit to meet broker's minimum distance: ", takeProfitPrice);
+      }
    }
-   else if(!isBuy && (stopLossPrice - entryPrice) < minStopDistance) {
-      stopLossPrice = entryPrice + minStopDistance;
-      Print("Adjusted SL to minimum distance: ", stopLossPrice);
-   }
+   
+   // Normalize prices to the correct number of digits
+   stopLossPrice = NormalizeDouble(stopLossPrice, _Digits);
+   takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
+   
+   // Log final values for debugging
+   PrintFormat("ExecuteTrade: Final values - Entry: %.5f, SL: %.5f, TP: %.5f, Broker's MinDistance: %.5f", 
+               entryPrice, stopLossPrice, takeProfitPrice, minStopDistance);
    
    // --- Determine Initial Lot Size based on Mode ---
    double initialLotSize;
@@ -1829,6 +1919,15 @@ void UpdateAndDrawValidSRZones()
        return;
    }
    
+   // Get EMA values for current and previous bars
+   double emaValues[];
+   ArraySetAsSeries(emaValues, true);
+   if(CopyBuffer(emaHandle, 0, 0, ratesNeeded, emaValues) < ratesNeeded)
+   {
+      Print("Error getting EMA values: ", GetLastError());
+      return;
+   }
+   
    // Get the close of the last completed bar for invalidation check
    double closeBar1 = rates[1].close;
    double closeBar2 = rates[2].close; // Also get close of bar 2 for recent break check
@@ -1880,6 +1979,47 @@ void UpdateAndDrawValidSRZones()
    
    // --- 2. Find New Potential Zones using Local Closes --- 
    
+   // First check for EMA crossovers in the lookback period
+   bool foundNewCross = false;
+   double crossPrice = 0.0;
+   bool crossAbove = false;
+   
+   for(int i = 1; i < lookback; i++)
+   {
+      if(i >= ArraySize(emaValues)) continue;
+      
+      double prevClose = rates[i+1].close;
+      double currClose = rates[i].close;
+      double prevEma = emaValues[i+1];
+      double currEma = emaValues[i];
+      
+      // Check for price crossing above EMA
+      if(prevClose <= prevEma && currClose > currEma)
+      {
+         foundNewCross = true;
+         crossPrice = currClose;
+         crossAbove = true;
+         break;
+      }
+      // Check for price crossing below EMA
+      else if(prevClose >= prevEma && currClose < currEma)
+      {
+         foundNewCross = true;
+         crossPrice = currClose;
+         crossAbove = false;
+         break;
+      }
+   }
+   
+   // Update last cross information if we found a new one
+   if(foundNewCross)
+   {
+      g_lastEmaCrossPrice = crossPrice;
+      g_lastEmaCrossAbove = crossAbove;
+      PrintFormat("New EMA crossover detected: Price %s EMA at %.5f", 
+                  crossAbove ? "crossed above" : "crossed below", crossPrice);
+   }
+   
    // Temporary arrays to hold the BAR INDEX (relative to 'rates' array) where potential zones are defined
    int potentialResIndices[]; 
    int potentialSupIndices[];
@@ -1892,19 +2032,25 @@ void UpdateAndDrawValidSRZones()
       // Check for local high close (potential Resistance)
       if(rates[i].close > rates[i-1].close && rates[i].close > rates[i+1].close)
       {       
-         // Store the index 'i'
-         ArrayResize(potentialResIndices, potentialResCount + 1);
-         potentialResIndices[potentialResCount] = i;
-         potentialResCount++;
+         // Only add if we have a valid EMA crossover and price is above EMA
+         if(foundNewCross && rates[i].close > emaValues[i])
+         {
+            ArrayResize(potentialResIndices, potentialResCount + 1);
+            potentialResIndices[potentialResCount] = i;
+            potentialResCount++;
+         }
       }
       
       // Check for local low close (potential Support)
       if(rates[i].close < rates[i-1].close && rates[i].close < rates[i+1].close)
       {      
-         // Store the index 'i'
-         ArrayResize(potentialSupIndices, potentialSupCount + 1);
-         potentialSupIndices[potentialSupCount] = i; 
-         potentialSupCount++;
+         // Only add if we have a valid EMA crossover and price is below EMA
+         if(foundNewCross && rates[i].close < emaValues[i])
+         {
+            ArrayResize(potentialSupIndices, potentialSupCount + 1);
+            potentialSupIndices[potentialSupCount] = i; 
+            potentialSupCount++;
+         }
       }
    }
    
@@ -1918,6 +2064,9 @@ void UpdateAndDrawValidSRZones()
       if (potentialIndex < 1 || potentialIndex >= ratesNeeded -1) continue; 
       
       double potentialDefiningClose = rates[potentialIndex].close;
+      // Ensure we have a valid EMA value for this index
+      if(potentialIndex >= ArraySize(emaValues)) continue;
+      double potentialEma = emaValues[potentialIndex];
 
       bool exists = false;
       // Check sensitivity against existing ACTIVE zones
@@ -1942,8 +2091,8 @@ void UpdateAndDrawValidSRZones()
                       potentialDefiningClose, potentialTopBoundary, closeBar1, closeBar2);
       }
        
-      // Add only if it doesn't exist AND wasn't broken recently
-      if(!brokenRecently) // 'exists' check already done with 'continue'
+      // Add only if it doesn't exist AND wasn't broken recently AND price is above EMA
+      if(!brokenRecently && potentialDefiningClose > potentialEma) // 'exists' check already done with 'continue'
       {  
          // Create the SRZone object
          SRZone newZone;
@@ -1953,13 +2102,13 @@ void UpdateAndDrawValidSRZones()
          newZone.definingBodyLow = MathMin(rates[potentialIndex].open, rates[potentialIndex].close); // Store defining body low
          newZone.definingBodyHigh = MathMax(rates[potentialIndex].open, rates[potentialIndex].close); // Store defining body high
          newZone.isResistance = true;
-         newZone.touchCount = 1; // Initial formation counts as the first touch
+         newZone.touchCount = 0; // Start with 0 touches, will be incremented when touched
          // Generate unique IDs
          newZone.chartObjectID_Top = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.topBoundary * 1e5)); 
          newZone.chartObjectID_Bottom = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.bottomBoundary * 1e5)) + 1; 
 
-         PrintFormat("S/R Detection: Adding new Resistance Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f", 
-                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary);
+         PrintFormat("S/R Detection: Adding new Resistance Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f, EMA=%.5f", 
+                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary, potentialEma);
                      
          int curSize = ArraySize(g_activeResistanceZones);
          ArrayResize(g_activeResistanceZones, curSize + 1);
@@ -1975,6 +2124,9 @@ void UpdateAndDrawValidSRZones()
       if (potentialIndex < 1 || potentialIndex >= ratesNeeded -1) continue; 
       
       double potentialDefiningClose = rates[potentialIndex].close;
+      // Ensure we have a valid EMA value for this index
+      if(potentialIndex >= ArraySize(emaValues)) continue;
+      double potentialEma = emaValues[potentialIndex];
 
       bool exists = false;
       // Check sensitivity against existing ACTIVE zones
@@ -1999,8 +2151,8 @@ void UpdateAndDrawValidSRZones()
                       potentialDefiningClose, potentialBottomBoundary, closeBar1, closeBar2);
       }
        
-      // Add only if it doesn't exist AND wasn't broken recently
-      if(!brokenRecently) // 'exists' check already done with 'continue'
+      // Add only if it doesn't exist AND wasn't broken recently AND price is below EMA
+      if(!brokenRecently && potentialDefiningClose < potentialEma) // 'exists' check already done with 'continue'
       {  
          // Create the SRZone object
          SRZone newZone;
@@ -2010,13 +2162,13 @@ void UpdateAndDrawValidSRZones()
          newZone.definingBodyLow = MathMin(rates[potentialIndex].open, rates[potentialIndex].close); // Store defining body low
          newZone.definingBodyHigh = MathMax(rates[potentialIndex].open, rates[potentialIndex].close); // Store defining body high
          newZone.isResistance = false;
-         newZone.touchCount = 1; // Initial formation counts as the first touch
+         newZone.touchCount = 0; // Start with 0 touches, will be incremented when touched
          // Generate unique IDs
          newZone.chartObjectID_Top = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.topBoundary * 1e5));
          newZone.chartObjectID_Bottom = ChartID() + TimeCurrent() + StringToInteger(DoubleToString(newZone.bottomBoundary * 1e5)) + 1;
 
-         PrintFormat("S/R Detection: Adding new Support Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f", 
-                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary);
+         PrintFormat("S/R Detection: Adding new Support Zone (Index %d): Close=%.5f, Bottom=%.5f, Top=%.5f, EMA=%.5f", 
+                     potentialIndex, newZone.definingClose, newZone.bottomBoundary, newZone.topBoundary, potentialEma);
                      
          int curSize = ArraySize(g_activeSupportZones);
          ArrayResize(g_activeSupportZones, curSize + 1);
@@ -2046,8 +2198,9 @@ void UpdateAndDrawValidSRZones()
             rates[2].close < g_activeResistanceZones[i].topBoundary + _Point) // <<< ADDED CHECK FOR BAR 2
          {
             g_activeResistanceZones[i].touchCount++;
-            PrintFormat("S/R Touch: Resistance Zone (Index %d, DefC=%.5f, Top=%.5f) touched by Bar 1 High (%.5f) with Bar 2 Sep. New Count: %d", 
-                        i, g_activeResistanceZones[i].definingClose, g_activeResistanceZones[i].topBoundary, rates[1].high, g_activeResistanceZones[i].touchCount);
+            PrintFormat("S/R Touch: Resistance Zone (Index %d, DefC=%.5f, Top=%.5f) touched by Bar 1 High (%.5f) with Bar 2 Sep. New Count: %d (Min Required: %d)", 
+                        i, g_activeResistanceZones[i].definingClose, g_activeResistanceZones[i].topBoundary, rates[1].high, 
+                        g_activeResistanceZones[i].touchCount, SR_Min_Touches);
          }
       }
    }
@@ -2065,8 +2218,9 @@ void UpdateAndDrawValidSRZones()
             rates[2].close > g_activeSupportZones[i].bottomBoundary - _Point) // <<< ADDED CHECK FOR BAR 2
          {
             g_activeSupportZones[i].touchCount++;
-            PrintFormat("S/R Touch: Support Zone (Index %d, DefC=%.5f, Bottom=%.5f) touched by Bar 1 Low (%.5f) with Bar 2 Sep. New Count: %d", 
-                        i, g_activeSupportZones[i].definingClose, g_activeSupportZones[i].bottomBoundary, rates[1].low, g_activeSupportZones[i].touchCount);
+            PrintFormat("S/R Touch: Support Zone (Index %d, DefC=%.5f, Bottom=%.5f) touched by Bar 1 Low (%.5f) with Bar 2 Sep. New Count: %d (Min Required: %d)", 
+                        i, g_activeSupportZones[i].definingClose, g_activeSupportZones[i].bottomBoundary, rates[1].low, 
+                        g_activeSupportZones[i].touchCount, SR_Min_Touches);
          }
       }
    }
