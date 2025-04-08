@@ -1939,9 +1939,10 @@ void UpdateAndDrawValidSRZones()
    for(int i = activeResSize - 1; i >= 0; i--) // Iterate backwards when removing
    {
        // Add tolerance: Invalidate only if close is clearly ABOVE level + 1 point
-       if(closeBar1 > g_activeResistanceZones[i].topBoundary + _Point)
+       if(closeBar1 > g_activeResistanceZones[i].topBoundary + _Point || 
+          rates[1].open > g_activeResistanceZones[i].topBoundary + _Point)
        {  
-           Print("S/R Zone Invalidation: Resistance Zone (", g_activeResistanceZones[i].bottomBoundary, "-", g_activeResistanceZones[i].topBoundary, ") invalidated by Bar 1 close (", closeBar1, ")");
+           Print("S/R Zone Invalidation: Resistance Zone (", g_activeResistanceZones[i].bottomBoundary, "-", g_activeResistanceZones[i].topBoundary, ") invalidated by Bar 1 open (", rates[1].open, ") or close (", closeBar1, ")");
            // Delete the specific chart objects for this zone before removing from array
            ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Top);
            ObjectDelete(0, "SRZone_" + (string)g_activeResistanceZones[i].chartObjectID_Bottom);
@@ -1961,9 +1962,10 @@ void UpdateAndDrawValidSRZones()
    for(int i = activeSupSize - 1; i >= 0; i--)
    {
        // Add tolerance: Invalidate only if close is clearly BELOW level - 1 point
-       if(closeBar1 < g_activeSupportZones[i].bottomBoundary - _Point)
+       if(closeBar1 < g_activeSupportZones[i].bottomBoundary - _Point ||
+          rates[1].open < g_activeSupportZones[i].bottomBoundary - _Point)
        {  
-           Print("S/R Zone Invalidation: Support Zone (", g_activeSupportZones[i].bottomBoundary, "-", g_activeSupportZones[i].topBoundary, ") invalidated by Bar 1 close (", closeBar1, ")");
+           Print("S/R Zone Invalidation: Support Zone (", g_activeSupportZones[i].bottomBoundary, "-", g_activeSupportZones[i].topBoundary, ") invalidated by Bar 1 open (", rates[1].open, ") or close (", closeBar1, ")");
            // Delete the specific chart objects for this zone
            ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Top);
            ObjectDelete(0, "SRZone_" + (string)g_activeSupportZones[i].chartObjectID_Bottom);
@@ -2502,21 +2504,19 @@ bool IsStrategyOnCooldown(int strategyNum, ulong magicNum)
    // 1. Check for Existing Open Position by this Strategy
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(PositionSelectByTicket(PositionGetTicket(i)))
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      // Check if position belongs to this EA and this specific strategy
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magicNum)
       {
-         // Check symbol and magic number
-         if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
-            PositionGetInteger(POSITION_MAGIC) == magicNum)
-         {
-             PrintFormat("Strategy %d skipped: Open position with magic %d already exists.", strategyNum, magicNum);
-             return true; // Strategy has an open position
-         }
+         PrintFormat("Strategy %d skipped: Already has an active trade (Ticket: %d)", strategyNum, ticket);
+         return true; // Strategy has an active trade
       }
    }
-
-   // 2. REMOVED Time-Based Cooldown Check
-   /*
-   datetime lastTradeTime = 0;
+   
+   // 2. Check time-based cooldown (if needed)
+   long lastTradeTime = 0;
    switch(strategyNum)
    {
       case 1: lastTradeTime = g_lastTradeTimeStrat1; break;
@@ -2526,22 +2526,20 @@ bool IsStrategyOnCooldown(int strategyNum, ulong magicNum)
       case 5: lastTradeTime = g_lastTradeTimeStrat5; break;
       default: return false; // Invalid strategy number
    }
- 
+  
    if (lastTradeTime == 0) return false; // No previous trade recorded
- 
+  
    long timeSinceLastTrade = TimeCurrent() - lastTradeTime;
-   // long cooldownSeconds = Strategy_Cooldown_Minutes * 60; // Input removed
    long cooldownSeconds = 60 * 60; // Example: Hardcoded 60 minutes if needed without input
- 
+  
    if (timeSinceLastTrade < cooldownSeconds)
    {
        PrintFormat("Strategy %d skipped: On time cooldown. Time since last trade: %d seconds (< %d seconds).",
                    strategyNum, timeSinceLastTrade, cooldownSeconds);
        return true; // Within cooldown period
    }
-   */
 
-   return false; // Not on cooldown (only position check remains)
+   return false; // Not on cooldown
 }
 
 //+------------------------------------------------------------------+
