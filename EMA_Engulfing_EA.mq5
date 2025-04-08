@@ -1235,11 +1235,8 @@ void ExecuteTradeStrategy5(bool isBuy)
    request.magic = magicNum; // Use defined magic number
    request.comment = "Strategy 5 " + string(isBuy ? "Buy" : "Sell");
    
-   // Check current spread and warn if high
-   // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
-   // if(spread > Max_Spread) {
-   //    Print("Warning: High spread (", spread, ") but proceeding with trade");
-   // }
+   // >>> DEBUG: Log final volume before sending order
+   PrintFormat("ExecuteTradeStrategy5: Preparing OrderSend. Volume=%.5f, SL=%.5f, TP=%.5f", request.volume, request.sl, request.tp);
    
    // Send trade order
    bool orderSent = OrderSend(request, result);
@@ -1463,11 +1460,8 @@ bool ExecuteTrade(int strategyNum, ulong magicNum, bool isBuy, double targetPric
    request.magic = magicNum;
    request.comment = "Strategy " + string(strategyNum) + " " + string(isBuy ? "Buy" : "Sell");
    
-   // Check current spread and warn if high
-   // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
-   // if(spread > Max_Spread) {
-   //    Print("Warning: High spread (", spread, ") but proceeding with trade");
-   // }
+   // >>> DEBUG: Log final volume before sending order
+   PrintFormat("ExecuteTrade: Preparing OrderSend (Strategy %d). Volume=%.5f, SL=%.5f, TP=%.5f", strategyNum, request.volume, request.sl, request.tp);
    
    // Send trade order
    bool orderSent = OrderSend(request, result);
@@ -2584,12 +2578,18 @@ bool ExecuteTradeStrategy1(bool isBuy, double slZoneBoundary)
     if (isBuy)
     {
         distance = MathAbs(ema1 - slZoneBoundary); // Distance between EMA[1] and Support Bottom
-        takeProfitPrice = ema1 + 2 * distance;     // TP = EMA[1] + 2 * Distance
+        takeProfitPrice = ema1 + (distance * 2.0);     // TP = EMA[1] + (Distance * 2.0) for Entry 1
     }
     else // Sell
     {
         distance = MathAbs(slZoneBoundary - ema1); // Distance between Resistance Top and EMA[1]
-        takeProfitPrice = ema1 - 2 * distance;     // TP = EMA[1] - 2 * Distance
+        takeProfitPrice = ema1 - (distance * 2.0);     // TP = EMA[1] - (Distance * 2.0) for Entry 1
+        
+        // Ensure TP is below current price for sell orders
+        if(takeProfitPrice >= bid) {
+            takeProfitPrice = bid - (distance * 2.0);
+            Print("ExecuteTradeStrategy1: Adjusted SELL TP to be below current price. New TP: ", takeProfitPrice);
+        }
     }
     takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
 
@@ -2681,12 +2681,8 @@ bool ExecuteTradeStrategy1(bool isBuy, double slZoneBoundary)
     request.magic = magicNum;
     request.comment = "Strategy " + string(strategyNum) + " " + string(isBuy ? "Buy" : "Sell");
 
-    // Check current spread and warn if high (informational only)
-    // long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD); // REMOVED SPREAD CHECK
-    // if (spread > Max_Spread)
-    // {
-    //     Print("Warning: High spread (", spread, ") but proceeding with trade");
-    // }
+    // >>> DEBUG: Log final volume before sending order
+    PrintFormat("ExecuteTradeStrategy1: Preparing OrderSend. Volume=%.5f, SL=%.5f, TP=%.5f", request.volume, request.sl, request.tp);
 
     // Send trade order
     bool orderSent = OrderSend(request, result);
