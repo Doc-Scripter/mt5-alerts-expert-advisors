@@ -57,7 +57,7 @@ struct SRZone
 };
 
 // Input parameters
-input int         EMA_Period = 20;       // EMA period
+// input int         EMA_Period = 20;       // EMA period
 input double      Lot_Size_1 = 1;     // First entry lot size (used if LotSizing_Mode=DYNAMIC_MARGIN_CHECK)
 input double      Lot_Size_2 = 0.5;     // Second entry lot size
 input double      RR_Ratio = 1.5;           // Risk/Reward Ratio for Take Profit (Consolidated)
@@ -69,8 +69,8 @@ input bool        Use_Strategy_2 = true; // Use S/R engulfing strategy
 input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strategy
 input bool        Use_Strategy_4 = false; // Use simple engulfing strategy
 input bool        Use_Strategy_5 = false;  // Use simple movement strategy (for testing)
-input bool        Engulfing_Use_Trend_Filter = false; // ENABLED BY DEFAULT: Use MA trend filter in IsEngulfing
-input int         SR_Lookback = 10;       // Number of candles to look back for S/R zones
+// input bool        Engulfing_Use_Trend_Filter = true; // ENABLED BY DEFAULT: Use MA trend filter in IsEngulfing
+input int         SR_Lookback = 50;       // Number of candles to look back for S/R zones
 input int         SR_Sensitivity_Pips = 3;    // Min distance between S/R zone defining closes (RELAXED to 3)
 input double      SL_Fallback_Pips = 15;   // SL distance in pips when zone boundary is not used (Increased default further)
 // input int         SR_Min_Touches = 1;       // Minimum touches required for a zone to be tradable (RELAXED to 1)
@@ -134,6 +134,9 @@ bool g_lastEmaCrossAbove = false;  // True if last cross was price crossing abov
 //| SR Zone Struct                                                   |
 //+------------------------------------------------------------------+
 
+// Define constants
+#define EMA_PERIOD 20                    // Fixed EMA period (20)
+#define STRATEGY_COOLDOWN_MINUTES 60      // Fixed cooldown minutes between same strategy trades
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                    |
@@ -172,7 +175,7 @@ int OnInit()
    Print("  Volume Step: ", volStep);
    
    // Initialize EMA indicator
-   emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+   emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_PERIOD, 0, MODE_EMA, PRICE_CLOSE);
    
    if(emaHandle == INVALID_HANDLE)
    {
@@ -372,9 +375,9 @@ bool IsEngulfing(int shift, bool bullish)
    Print("  - Previous Bar (", priorIdx, "): O=", open2, " C=", close2);
 
    // --- Trend Filter (Optional - Check if enabled) --- 
-   bool trendOkBull = !Engulfing_Use_Trend_Filter; // Default to true if filter is OFF
-   bool trendOkBear = !Engulfing_Use_Trend_Filter;
-   if(Engulfing_Use_Trend_Filter)
+   bool trendOkBull = !Use_Trend_Filter; // Default to true if filter is OFF
+   bool trendOkBear = !Use_Trend_Filter;
+   if(Use_Trend_Filter)
    {
       if(ArraySize(emaValues) < priorIdx + 1)
       {
@@ -401,7 +404,7 @@ bool IsEngulfing(int shift, bool bullish)
       Print("  - Prior is Bearish (C2<O2-T): ", priorIsBearish);
       Print("  - Current is Bullish (C1>O1+T): ", currentIsBullish);
       Print("  - Engulfs Prior Body (O1<C2-T && C1>O2+T): ", engulfsBody);
-      if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBull);
+      if(Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBull);
       
       isEngulfing = priorIsBearish && currentIsBullish && engulfsBody && trendOkBull;
    }
@@ -415,7 +418,7 @@ bool IsEngulfing(int shift, bool bullish)
       Print("  - Prior is Bullish (C2>O2+T): ", priorIsBullish);
       Print("  - Current is Bearish (C1<O1-T): ", currentIsBearish);
       Print("  - Engulfs Prior Body (O1>C2+T && C1<O2-T): ", engulfsBody);
-      if(Engulfing_Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBear);
+      if(Use_Trend_Filter) Print("  - Trend Filter OK: ", trendOkBear);
       
       isEngulfing = priorIsBullish && currentIsBearish && engulfsBody && trendOkBear;
    }
@@ -557,24 +560,18 @@ bool CheckStrategy1()
                    return false;
                }
                
-               // After confirming bullishEngulfing and before executing the trade
-// Check if support was breached between crossover (bar 1) and current bar (bar 0)
-bool supportBreached = false;
-for(int i = 1; i >= 0; i--) // Check bars 1 and 0
-{
-    double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
-    if(barLow <= nearestSupport.bottomBoundary)
-    {
-        supportBreached = true;
-        PrintFormat("Strategy 1: Support breached at bar %d (Low=%.5f <= Support=%.5f)", i, barLow, nearestSupport.bottomBoundary);
-        break;
-    }
-}
-if(supportBreached)
-{
-    Print("Strategy 1: BUY setup invalidated - Support level breached post-crossover.");
-    return false; // Skip trade
-}
+               // NEW: Check if support was touched or broken between EMA cross and engulfing pattern
+               for(int i = 2; i >= 1; i--) // Check from bar 2 to bar 1
+               {
+                   double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
+                   if(barLow <= nearestSupport.bottomBoundary)
+                   {
+                       PrintFormat("Strategy 1: Support level (%.5f) was touched/broken at bar %d (Low=%.5f) before engulfing formed. Setup invalid.", 
+                                 nearestSupport.bottomBoundary, i, barLow);
+                       return false;
+                   }
+               }
+
                PrintFormat("Strategy 1: Nearest Support found (Bottom=%.5f). Triggering BUY.", nearestSupport.bottomBoundary);
                ExecuteTradeStrategy1(true, nearestSupport.bottomBoundary); // Pass BUY signal and support bottom for SL calc
                return true; // Trade attempted
@@ -624,24 +621,18 @@ if(supportBreached)
                    PrintFormat("Strategy 1 skipped: Active SELL trade from same resistance level (%.5f) exists.", g_strat1_active_sell_sl_level);
                    return false;
                }
-               // After confirming bearishEngulfing and before executing the trade
-// Check if resistance was breached between crossover (bar 1) and current bar (bar 0)
-bool resistanceBreached = false;
-for(int i = 1; i >= 0; i--) // Check bars 1 and 0
-{
-    double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
-    if(barHigh >= nearestResistance.topBoundary)
-    {
-        resistanceBreached = true;
-        PrintFormat("Strategy 1: Resistance breached at bar %d (High=%.5f >= Resistance=%.5f)", i, barHigh, nearestResistance.topBoundary);
-        break;
-    }
-}
-if(resistanceBreached)
-{
-    Print("Strategy 1: SELL setup invalidated - Resistance level breached post-crossover.");
-    return false; // Skip trade
-}
+               
+               // NEW: Check if resistance was touched or broken between EMA cross and engulfing pattern
+               for(int i = 2; i >= 1; i--) // Check from bar 2 to bar 1
+               {
+                   double barHigh = iHigh(_Symbol, PERIOD_CURRENT, i);
+                   if(barHigh >= nearestResistance.topBoundary)
+                   {
+                       PrintFormat("Strategy 1: Resistance level (%.5f) was touched/broken at bar %d (High=%.5f) before engulfing formed. Setup invalid.", 
+                                 nearestResistance.topBoundary, i, barHigh);
+                       return false;
+                   }
+               }
 
                PrintFormat("Strategy 1: Nearest Resistance found (Top=%.5f). Triggering SELL.", nearestResistance.topBoundary);
                ExecuteTradeStrategy1(false, nearestResistance.topBoundary); // Pass SELL signal and resistance top for SL calc
@@ -1296,7 +1287,10 @@ void ExecuteTradeStrategy5(bool isBuy)
    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    request.price = entryPrice;
    request.sl = stopLoss;
-   request.tp = takeProfit;
+   if (!S5_DisableTP)
+   {
+      request.tp = takeProfit;
+   }
    request.deviation = 10;
    request.magic = magicNum; // Use defined magic number
    request.comment = "Strategy 5 " + string(isBuy ? "Buy" : "Sell");
@@ -2586,7 +2580,7 @@ bool IsStrategyOnCooldown(int strategyNum, ulong magicNum)
    if (lastTradeTime == 0) return false; // No previous trade recorded
   
    long timeSinceLastTrade = TimeCurrent() - lastTradeTime;
-   long cooldownSeconds = 60 * 60; // Example: Hardcoded 60 minutes if needed without input
+   long cooldownSeconds = STRATEGY_COOLDOWN_MINUTES * 60; // Convert minutes to seconds
   
    if (timeSinceLastTrade < cooldownSeconds)
    {
