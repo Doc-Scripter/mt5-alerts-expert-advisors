@@ -70,7 +70,7 @@ input bool        Use_Strategy_3 = true; // Use breakout + EMA engulfing strateg
 input bool        Use_Strategy_4 = false; // Use simple engulfing strategy
 input bool        Use_Strategy_5 = false;  // Use simple movement strategy (for testing)
 // input bool        Engulfing_Use_Trend_Filter = true; // ENABLED BY DEFAULT: Use MA trend filter in IsEngulfing
-input int         SR_Lookback = 50;       // Number of candles to look back for S/R zones
+input int         SR_Lookback = 20;       // Number of candles to look back for S/R zones
 input int         SR_Sensitivity_Pips = 3;    // Min distance between S/R zone defining closes (RELAXED to 3)
 input double      SL_Fallback_Pips = 15;   // SL distance in pips when zone boundary is not used (Increased default further)
 // input int         SR_Min_Touches = 1;       // Minimum touches required for a zone to be tradable (RELAXED to 1)
@@ -537,54 +537,39 @@ bool CheckStrategy1()
       if (bullishEngulfing) DrawEngulfingMarker(1, true); // <<< DRAW MARKER on detection
       if (bullishEngulfing) // Check only for crossover and engulfing
       {
+         // First check price structure validation - NEW PRIMARY VALIDATION
+         if (!IsValidPriceStructure(2, 1, true))
+         {
+            PrintFormat("Strategy 1: Invalid bullish price structure between cross and engulfing");
+            return false;
+         }
+
          // Check Trend Filter if enabled
          if (Use_Trend_Filter && currentTrend != TREND_BULLISH)
          {
             PrintFormat("Strategy 1: Bullish signal ignored - Trend Filter (%s) is not Bullish.", trendStr);
-            return false; // Filtered by trend
+            return false;
          }
-         // Trend OK or Filter Disabled
-         // Confirmation check: Not both open and close of bar 0 are below EMA
-         if (!(open0 < ema0 && close0 < ema0))
+
+         // If structure and trend are valid, check support zone
+         if (g_nearestSupportZoneIndex != -1)
          {
-            PrintFormat("Strategy 1: Bullish Confirmation on Bar 0 (Not both O[0]=%.5f & C[0]=%.5f < EMA[0]=%.5f)", open0, close0, ema0);
-            // Check for nearest SUPPORT zone
-            if (g_nearestSupportZoneIndex != -1)
-            {
-               SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
+            SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
 
-               // Check S/R Level Cooldown
-               if (g_strat1_active_buy_sl_level != 0.0 && MathAbs(nearestSupport.bottomBoundary - g_strat1_active_buy_sl_level) < _Point)
-               {
-                   PrintFormat("Strategy 1 skipped: Active BUY trade from same support level (%.5f) exists.", g_strat1_active_buy_sl_level);
-                   return false;
-               }
-               
-               // NEW: Check if support was touched or broken between EMA cross and engulfing pattern
-               for(int i = 2; i >= 1; i--) // Check from bar 2 to bar 1
-               {
-                   double barLow = iLow(_Symbol, PERIOD_CURRENT, i);
-                   if(barLow <= nearestSupport.bottomBoundary)
-                   {
-                       PrintFormat("Strategy 1: Support level (%.5f) was touched/broken at bar %d (Low=%.5f) before engulfing formed. Setup invalid.", 
-                                 nearestSupport.bottomBoundary, i, barLow);
-                       return false;
-                   }
-               }
-
-               PrintFormat("Strategy 1: Nearest Support found (Bottom=%.5f). Triggering BUY.", nearestSupport.bottomBoundary);
-               ExecuteTradeStrategy1(true, nearestSupport.bottomBoundary); // Pass BUY signal and support bottom for SL calc
-               return true; // Trade attempted
-            }
-            else
+            // Check S/R Level Cooldown
+            if (g_strat1_active_buy_sl_level != 0.0 && 
+               MathAbs(nearestSupport.bottomBoundary - g_strat1_active_buy_sl_level) < _Point)
             {
-               Print("Strategy 1: Bullish signal ignored - No nearest support zone found.");
+               PrintFormat("Strategy 1 skipped: Active BUY trade from same support level (%.5f) exists.", 
+                        g_strat1_active_buy_sl_level);
+               return false;
             }
+
+            // Execute trade if all conditions met
+            PrintFormat("Strategy 1: Valid bullish setup. Triggering BUY.");
+            ExecuteTradeStrategy1(true, nearestSupport.bottomBoundary);
+            return true;
          }
-      }
-      else
-      {
-         PrintFormat("Strategy 1: Bullish Crossover ignored - Engulfing failed on Bar 1"); // Simplified message
       }
    }
 
@@ -599,6 +584,13 @@ bool CheckStrategy1()
       if (bearishEngulfing) DrawEngulfingMarker(1, false); // <<< DRAW MARKER on detection
       if (bearishEngulfing) // Check only for crossover and engulfing
       {
+         // Add price structure check BEFORE checking trend filter
+         if (!IsValidPriceStructure(2, 1, false))
+         {
+            PrintFormat("Strategy 1: Invalid bearish price structure between cross and engulfing");
+            return false;
+         }
+
          // Check Trend Filter if enabled
          if (Use_Trend_Filter && currentTrend != TREND_BEARISH)
          {
@@ -2921,5 +2913,94 @@ bool ExecuteTradeStrategy1(bool isBuy, double slZoneBoundary)
         PrintFormat("ExecuteTradeStrategy1: Order execution failed. Retcode: %d (%s), Comment: %s",
                     result.retcode, TradeRetcodeToString(result.retcode), result.comment);
         return false;
+    }
+}
+
+// Add this helper function to check price action structure
+bool IsValidPriceStructure(int startBar, int endBar, bool isBullish)
+{
+    if(startBar <= endBar) return false; // Need valid bar range
+    
+    // Get high/low values - renamed from priceHighs, priceLows, priceCloses
+    double localHighs[], localLows[], localCloses[];
+    ArraySetAsSeries(localHighs, true);
+    ArraySetAsSeries(localLows, true);
+    ArraySetAsSeries(localCloses, true);
+    
+    if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, startBar + 1, localHighs) != startBar + 1 ||
+       CopyLow(_Symbol, PERIOD_CURRENT, 0, startBar + 1, localLows) != startBar + 1 ||
+       CopyClose(_Symbol, PERIOD_CURRENT, 0, startBar + 1, localCloses) != startBar + 1)
+    {
+        Print("IsValidPriceStructure: Failed to copy price data");
+        return false;
+    }
+    
+    if(isBullish)
+    {
+        // First check if we had lower lows before the cross
+        bool hadLowerLows = false;
+        for(int i = startBar + 1; i < ArraySize(localLows) - 1; i++)
+        {
+            if(localLows[i] < localLows[i-1])
+            {
+                hadLowerLows = true;
+                break;
+            }
+        }
+        
+        if(!hadLowerLows)
+        {
+            PrintFormat("Bullish structure invalid: No lower lows found before cross at bar %d", startBar);
+            return false;
+        }
+        
+        // Then check that no higher highs/lows formed between cross and engulf
+        double lowestLow = localLows[startBar];
+        double highestHigh = localHighs[startBar];
+        
+        for(int i = startBar-1; i >= endBar; i--)
+        {
+            if(localHighs[i] > highestHigh || localLows[i] > lowestLow)
+            {
+                PrintFormat("Bullish structure invalidated at bar %d: Price made new high/low HH=%.5f > %.5f or HL=%.5f > %.5f", 
+                          i, localHighs[i], highestHigh, localLows[i], lowestLow);
+                return false;
+            }
+        }
+        return true;
+    }
+    else // Bearish
+    {
+        // First check if we had higher highs before the cross
+        bool hadHigherHighs = false;
+        for(int i = startBar + 1; i < ArraySize(localHighs) - 1; i++)
+        {
+            if(localHighs[i] > localHighs[i-1])
+            {
+                hadHigherHighs = true;
+                break;
+            }
+        }
+        
+        if(!hadHigherHighs)
+        {
+            PrintFormat("Bearish structure invalid: No higher highs found before cross at bar %d", startBar);
+            return false;
+        }
+        
+        // Then check that no lower lows/highs formed between cross and engulf
+        double highestLow = localLows[startBar];
+        double lowestHigh = localHighs[startBar];
+        
+        for(int i = startBar-1; i >= endBar; i--)
+        {
+            if(localLows[i] < highestLow || localHighs[i] < lowestHigh)
+            {
+                PrintFormat("Bearish structure invalidated at bar %d: Price made new low/high LL=%.5f < %.5f or LH=%.5f < %.5f", 
+                          i, localLows[i], highestLow, localHighs[i], lowestHigh);
+                return false;
+            }
+        }
+        return true;
     }
 }
