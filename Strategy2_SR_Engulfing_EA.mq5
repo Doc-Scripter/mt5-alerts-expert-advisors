@@ -503,13 +503,37 @@ int GetTrendState()
 }
 
 //+------------------------------------------------------------------+
+//| Check if S/R zone is broken                                        |
+//+------------------------------------------------------------------+
+bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
+{
+   // Need at least 2 candles to confirm a break (open and close beyond the zone)
+   if(shift + 1 >= ArraySize(rates)) return false;
+   
+   if(zone.isResistance)
+   {
+      // Zone is broken if we have a candle that opened and closed above the top
+      return (rates[shift].open > zone.topBoundary && 
+              rates[shift].close > zone.topBoundary &&
+              rates[shift+1].close > zone.topBoundary);
+   }
+   else
+   {
+      // Zone is broken if we have a candle that opened and closed below the bottom
+      return (rates[shift].open < zone.bottomBoundary && 
+              rates[shift].close < zone.bottomBoundary &&
+              rates[shift+1].close < zone.bottomBoundary);
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Update and validate S/R zones                                     |
 //+------------------------------------------------------------------+
 void UpdateAndDrawValidSRZones()
 {
    Print("UpdateAndDrawValidSRZones: Starting update...");
    
-   // Delete existing zone lines before redrawing
+   // Delete existing lines before creating new ones
    DeleteAllSRZoneLines();
    
    // Get price data
@@ -518,8 +542,35 @@ void UpdateAndDrawValidSRZones()
    int copied = CopyRates(_Symbol, PERIOD_CURRENT, 0, SR_Lookback + 2, rates);
    if(copied < SR_Lookback + 2)
    {
-      Print("UpdateAndDrawValidSRZones: Failed to copy rates. Copied: ", copied, " Error: ", GetLastError());
+      Print("UpdateAndDrawValidSRZones: Failed to copy rates. Error: ", GetLastError());
       return;
+   }
+   
+   // Remove broken zones
+   for(int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
+   {
+      if(IsZoneBroken(g_activeResistanceZones[i], rates, 0))
+      {
+         // Delete the zone's lines
+         ObjectDelete(0, "SRZone_" + IntegerToString(g_activeResistanceZones[i].chartObjectID_Top));
+         ObjectDelete(0, "SRZone_" + IntegerToString(g_activeResistanceZones[i].chartObjectID_Bottom));
+         
+         // Remove the zone from array
+         ArrayRemove(g_activeResistanceZones, i, 1);
+      }
+   }
+   
+   for(int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
+   {
+      if(IsZoneBroken(g_activeSupportZones[i], rates, 0))
+      {
+         // Delete the zone's lines
+         ObjectDelete(0, "SRZone_" + IntegerToString(g_activeSupportZones[i].chartObjectID_Top));
+         ObjectDelete(0, "SRZone_" + IntegerToString(g_activeSupportZones[i].chartObjectID_Bottom));
+         
+         // Remove the zone from array
+         ArrayRemove(g_activeSupportZones, i, 1);
+      }
    }
    
    // Clear existing zones
@@ -645,22 +696,50 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
 //+------------------------------------------------------------------+
 void DrawZoneLines(const SRZone &zone, const color lineColor)
 {
+   // Get chart timeframe boundaries
    datetime time1 = TimeCurrent();
-   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 20;
+   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 50; // Extended visibility
    
-   // Draw top boundary
-   ObjectCreate(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJ_TREND, 0, 
-               time1, zone.topBoundary, time2, zone.topBoundary);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_COLOR, lineColor);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_STYLE, STYLE_DOT);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_WIDTH, 1);
+   string topName = "SRZone_" + IntegerToString(zone.chartObjectID_Top);
+   string bottomName = "SRZone_" + IntegerToString(zone.chartObjectID_Bottom);
    
-   // Draw bottom boundary
-   ObjectCreate(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJ_TREND, 0,
-               time1, zone.bottomBoundary, time2, zone.bottomBoundary);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_COLOR, lineColor);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_STYLE, STYLE_DOT);
-   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_WIDTH, 1);
+   // Delete existing lines if they exist
+   ObjectDelete(0, topName);
+   ObjectDelete(0, bottomName);
+   
+   // Create top boundary line
+   if(!ObjectCreate(0, topName, OBJ_TREND, 0, time1, zone.topBoundary, time2, zone.topBoundary))
+   {
+      Print("Failed to create top boundary line. Error: ", GetLastError());
+      return;
+   }
+   
+   // Create bottom boundary line
+   if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, time1, zone.bottomBoundary, time2, zone.bottomBoundary))
+   {
+      Print("Failed to create bottom boundary line. Error: ", GetLastError());
+      return;
+   }
+   
+   // Set properties for top line
+   ObjectSetInteger(0, topName, OBJPROP_COLOR, lineColor);
+   ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_SOLID);
+   ObjectSetInteger(0, topName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, topName, OBJPROP_BACK, true);
+   ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, topName, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
+   
+   // Set properties for bottom line
+   ObjectSetInteger(0, bottomName, OBJPROP_COLOR, lineColor);
+   ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_SOLID);
+   ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, bottomName, OBJPROP_BACK, true);
+   ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bottomName, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, bottomName, OBJPROP_RAY_RIGHT, true);
+   
+   ChartRedraw(0); // Force chart redraw
 }
 
 //+------------------------------------------------------------------+
@@ -690,7 +769,24 @@ int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity
 //+------------------------------------------------------------------+
 void DeleteAllSRZoneLines()
 {
-   ObjectsDeleteAll(0, "SRZone_");
+   Print("DeleteAllSRZoneLines: Starting cleanup...");
+   
+   // Delete all objects with our prefix
+   int totalObjects = ObjectsTotal(0);
+   for(int i = totalObjects - 1; i >= 0; i--)
+   {
+      string objName = ObjectName(0, i);
+      if(StringFind(objName, "SRZone_") == 0)
+      {
+         if(!ObjectDelete(0, objName))
+         {
+            Print("Failed to delete object ", objName, ". Error: ", GetLastError());
+         }
+      }
+   }
+   
+   ChartRedraw(0);
+   Print("DeleteAllSRZoneLines: Cleanup completed");
 }
 
 //+------------------------------------------------------------------+
