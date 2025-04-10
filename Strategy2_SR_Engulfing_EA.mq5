@@ -71,6 +71,7 @@ int g_nearestResistanceZoneIndex = -1;
 // Constants
 #define EMA_PERIOD 20
 #define STRATEGY_COOLDOWN_MINUTES 60
+#define SHIFT_TO_CHECK 1  // Candlestick shift to check for patterns
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
@@ -190,8 +191,11 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
+   // Initialize arrays with proper size (need more than 3 bars for strategy checks)
+   int requiredBars = SHIFT_TO_CHECK + 4; // Need enough bars for strategy checks
+   ArrayResize(emaValues, requiredBars);
    ArraySetAsSeries(emaValues, true);
-   if(CopyBuffer(emaHandle, 0, 0, 3, emaValues) < 3)
+   if(CopyBuffer(emaHandle, 0, 0, requiredBars, emaValues) < requiredBars)
    {
       Print("Failed to copy EMA values");
       return false;
@@ -199,13 +203,18 @@ bool UpdateIndicators()
    
    if(Use_Trend_Filter)
    {
+      // Initialize trend filter arrays with proper size
+      ArrayResize(trendFastEmaValues, requiredBars);
+      ArrayResize(trendSlowEmaValues, requiredBars);
+      ArrayResize(trendAdxValues, requiredBars);
+      
       ArraySetAsSeries(trendFastEmaValues, true);
       ArraySetAsSeries(trendSlowEmaValues, true);
       ArraySetAsSeries(trendAdxValues, true);
       
-      if(CopyBuffer(trendFastEmaHandle, 0, 0, 3, trendFastEmaValues) < 3 ||
-         CopyBuffer(trendSlowEmaHandle, 0, 0, 3, trendSlowEmaValues) < 3 ||
-         CopyBuffer(trendAdxHandle, 0, 0, 3, trendAdxValues) < 3)
+      if(CopyBuffer(trendFastEmaHandle, 0, 0, requiredBars, trendFastEmaValues) < requiredBars ||
+         CopyBuffer(trendSlowEmaHandle, 0, 0, requiredBars, trendSlowEmaValues) < requiredBars ||
+         CopyBuffer(trendAdxHandle, 0, 0, requiredBars, trendAdxValues) < requiredBars)
       {
          Print("Failed to copy trend filter values");
          return false;
@@ -238,6 +247,9 @@ bool IsEngulfing(int shift, bool bullish)
    
    if(Use_Trend_Filter)
    {
+      if(priorIdx >= ArraySize(emaValues))
+         return false;
+         
       double maPrior = emaValues[priorIdx];
       double midOCPrior = (open2 + close2) / 2.0;
       trendOkBull = midOCPrior < maPrior;
@@ -270,12 +282,12 @@ void CheckStrategy()
    // Check cooldown
    if(IsStrategyOnCooldown()) return;
    
-   int shiftToCheck = 1;
-   double closePrice = iClose(_Symbol, PERIOD_CURRENT, shiftToCheck);
+   double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
    
    // Check bullish engulfing at support
-   bool isBullishEngulfing = IsEngulfing(shiftToCheck, true);
-   if(isBullishEngulfing && g_nearestSupportZoneIndex != -1)
+   bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true);
+   if(isBullishEngulfing && g_nearestSupportZoneIndex != -1 && 
+      g_nearestSupportZoneIndex < ArraySize(g_activeSupportZones))
    {
       SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
       
@@ -283,7 +295,7 @@ void CheckStrategy()
                                   closePrice <= nearestSupport.topBoundary);
                                   
       bool priceBelowEMARecently = false;
-      for(int i = shiftToCheck + 1; i <= shiftToCheck + 3; i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(emaValues); i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
          if(close < emaValues[i])
@@ -309,8 +321,9 @@ void CheckStrategy()
    }
    
    // Check bearish engulfing at resistance
-   bool isBearishEngulfing = IsEngulfing(shiftToCheck, false);
-   if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1)
+   bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false);
+   if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1 &&
+      g_nearestResistanceZoneIndex < ArraySize(g_activeResistanceZones))
    {
       SRZone nearestResistance = g_activeResistanceZones[g_nearestResistanceZoneIndex];
       
@@ -318,7 +331,7 @@ void CheckStrategy()
                                   closePrice <= nearestResistance.topBoundary);
                                   
       bool priceAboveEMARecently = false;
-      for(int i = shiftToCheck + 1; i <= shiftToCheck + 3; i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(emaValues); i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
          if(close > emaValues[i])
@@ -442,6 +455,9 @@ int GetTrendState()
 {
    if(!Use_Trend_Filter) return TREND_RANGING;
    
+   if(ArraySize(trendFastEmaValues) == 0 || ArraySize(trendSlowEmaValues) == 0 || ArraySize(trendAdxValues) == 0)
+      return TREND_RANGING;
+   
    double fastEMA = trendFastEmaValues[0];
    double slowEMA = trendSlowEmaValues[0];
    double adxValue = trendAdxValues[0];
@@ -553,7 +569,8 @@ void UpdateAndDrawValidSRZones()
       if(g_activeResistanceZones[i].bottomBoundary > currentPrice)
       {
          if(g_nearestResistanceZoneIndex == -1 || 
-            g_activeResistanceZones[i].bottomBoundary < g_activeResistanceZones[g_nearestResistanceZoneIndex].bottomBoundary)
+            (g_nearestResistanceZoneIndex < ArraySize(g_activeResistanceZones) &&
+             g_activeResistanceZones[i].bottomBoundary < g_activeResistanceZones[g_nearestResistanceZoneIndex].bottomBoundary))
          {
             g_nearestResistanceZoneIndex = i;
          }
@@ -572,7 +589,8 @@ void UpdateAndDrawValidSRZones()
       if(g_activeSupportZones[i].topBoundary < currentPrice)
       {
          if(g_nearestSupportZoneIndex == -1 || 
-            g_activeSupportZones[i].topBoundary > g_activeSupportZones[g_nearestSupportZoneIndex].topBoundary)
+            (g_nearestSupportZoneIndex < ArraySize(g_activeSupportZones) &&
+             g_activeSupportZones[i].topBoundary > g_activeSupportZones[g_nearestSupportZoneIndex].topBoundary))
          {
             g_nearestSupportZoneIndex = i;
          }
