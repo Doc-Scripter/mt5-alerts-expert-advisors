@@ -443,4 +443,84 @@ void CheckTrailingStop(double activationPips = 20, double trailDistance = 10)
       }
    }
 }
+
+bool IsEngulfing(const int shift, const bool bullish, const bool useFilter)
+{
+   if(shift < 0 || shift >= Bars(_Symbol, PERIOD_CURRENT)) 
+   {
+      Print("IsEngulfing: Invalid shift value");
+      return false;
+   }
+
+   // Get candle data
+   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift);
+   double close2 = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
+   double open2 = iOpen(_Symbol, PERIOD_CURRENT, shift + 1);
+   
+   // Verify we have valid data
+   if(close1 == 0 || open1 == 0 || close2 == 0 || open2 == 0)
+   {
+      Print("IsEngulfing: Invalid price data at shift ", shift);
+      return false;
+   }
+
+   bool isEngulfing = false;
+   
+   if(bullish)
+   {
+      // Bullish engulfing
+      isEngulfing = (close1 > open1 &&           // Current candle is bullish
+                    close2 < open2 &&           // Previous candle is bearish
+                    close1 > open2 &&           // Current close above previous open
+                    open1 < close2);           // Current open below previous close
+   }
+   else
+   {
+      // Bearish engulfing
+      isEngulfing = (close1 < open1 &&           // Current candle is bearish
+                    close2 > open2 &&           // Previous candle is bullish
+                    close1 < open2 &&           // Current close below previous open
+                    open1 > close2);           // Current open above previous close
+   }
+   
+   if(isEngulfing)
+   {
+      Print("IsEngulfing: ", (bullish ? "Bullish" : "Bearish"), " engulfing pattern detected at shift ", shift);
+      
+      // Additional validation using EMA if required
+      if(useFilter && ArraySize(g_ema.values) > shift + 1)
+      {
+         bool validPosition = bullish ? 
+            (close1 > g_ema.values[shift] && open1 < g_ema.values[shift]) :
+            (close1 < g_ema.values[shift] && open1 > g_ema.values[shift]);
+            
+         if(!validPosition)
+         {
+            Print("IsEngulfing: Pattern rejected by EMA filter");
+            return false;
+         }
+      }
+   }
+   
+   return isEngulfing;
+}
+
+void ReleaseEMA()
+{
+   Print("ReleaseEMA: Starting cleanup...");
+   if(g_ema.handle != INVALID_HANDLE)
+   {
+      Print("ReleaseEMA: Releasing indicator handle ", g_ema.handle);
+      bool released = IndicatorRelease(g_ema.handle);
+      if(!released)
+      {
+         int error = GetLastError();
+         Print("ReleaseEMA: Failed to release indicator handle. Error: ", error);
+      }
+      g_ema.handle = INVALID_HANDLE;
+   }
+   ArrayFree(g_ema.values);
+   Print("ReleaseEMA: Cleanup completed");
+}
 //+------------------------------------------------------------------+

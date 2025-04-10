@@ -69,7 +69,6 @@ int g_nearestSupportZoneIndex = -1;
 int g_nearestResistanceZoneIndex = -1;
 
 // Constants
-#define EMA_PERIOD 20
 #define STRATEGY_COOLDOWN_MINUTES 60
 #define SHIFT_TO_CHECK 1  // Candlestick shift to check for patterns
 
@@ -160,29 +159,31 @@ int OnInit()
 //| Expert deinitialization function                                   |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
-{
+{   
    Print("OnDeinit: Starting cleanup with reason code ", reason);
    
+   // Release EMA indicator
    Print("OnDeinit: Releasing EMA indicator...");
    ReleaseEMA();
-      
+   
+   // Release trend indicators only if they were created
    if(Use_Trend_Filter)
    {
       Print("OnDeinit: Releasing trend filter indicators...");
       if(trendFastEmaHandle != INVALID_HANDLE)
       {
-         Print("OnDeinit: Releasing Fast EMA handle ", trendFastEmaHandle);
          IndicatorRelease(trendFastEmaHandle);
+         trendFastEmaHandle = INVALID_HANDLE;
       }
       if(trendSlowEmaHandle != INVALID_HANDLE)
       {
-         Print("OnDeinit: Releasing Slow EMA handle ", trendSlowEmaHandle);
          IndicatorRelease(trendSlowEmaHandle);
+         trendSlowEmaHandle = INVALID_HANDLE;
       }
       if(trendAdxHandle != INVALID_HANDLE)
       {
-         Print("OnDeinit: Releasing ADX handle ", trendAdxHandle);
          IndicatorRelease(trendAdxHandle);
+         trendAdxHandle = INVALID_HANDLE;
       }
    }
    
@@ -263,7 +264,6 @@ bool UpdateIndicators()
    return true;
 }
 
-
 //+------------------------------------------------------------------+
 //| Check strategy conditions                                         |
 //+------------------------------------------------------------------+
@@ -272,7 +272,19 @@ void CheckStrategy()
    // Check cooldown
    if(IsStrategyOnCooldown()) return;
    
+   // Verify we have enough data
+   if(ArraySize(g_ema.values) <= SHIFT_TO_CHECK + 3)
+   {
+      Print("CheckStrategy: Insufficient EMA data");
+      return;
+   }
+   
    double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
+   if(closePrice == 0)
+   {
+      Print("CheckStrategy: Invalid close price");
+      return;
+   }
    
    // Check bullish engulfing at support
    bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true, Use_Trend_Filter);
@@ -285,10 +297,10 @@ void CheckStrategy()
                                   closePrice <= nearestSupport.topBoundary);
                                   
       bool priceBelowEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(g_ema.values); i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3; i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(close < g_ema.values[i])
+         if(ArraySize(g_ema.values) > i && close < g_ema.values[i])
          {
             priceBelowEMARecently = true;
             break;
@@ -321,10 +333,10 @@ void CheckStrategy()
                                   closePrice <= nearestResistance.topBoundary);
                                   
       bool priceAboveEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(g_ema.values); i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3; i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(close > g_ema.values[i])
+         if(ArraySize(g_ema.values) > i && close > g_ema.values[i])
          {
             priceAboveEMARecently = true;
             break;
@@ -495,12 +507,18 @@ int GetTrendState()
 //+------------------------------------------------------------------+
 void UpdateAndDrawValidSRZones()
 {
+   Print("UpdateAndDrawValidSRZones: Starting update...");
+   
+   // Delete existing zone lines before redrawing
+   DeleteAllSRZoneLines();
+   
    // Get price data
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   if(CopyRates(_Symbol, PERIOD_CURRENT, 0, SR_Lookback + 2, rates) < SR_Lookback + 2)
+   int copied = CopyRates(_Symbol, PERIOD_CURRENT, 0, SR_Lookback + 2, rates);
+   if(copied < SR_Lookback + 2)
    {
-      Print("Failed to copy rates for S/R zones");
+      Print("UpdateAndDrawValidSRZones: Failed to copy rates. Copied: ", copied, " Error: ", GetLastError());
       return;
    }
    
@@ -510,9 +528,10 @@ void UpdateAndDrawValidSRZones()
    g_nearestSupportZoneIndex = -1;
    g_nearestResistanceZoneIndex = -1;
    
-   // Look for new zones
    double sensitivityValue = SR_Sensitivity_Pips * _Point;
+   Print("UpdateAndDrawValidSRZones: Sensitivity value: ", sensitivityValue);
    
+   // Look for new zones
    for(int i = 1; i < SR_Lookback; i++)
    {
       // Check for potential resistance
@@ -525,23 +544,11 @@ void UpdateAndDrawValidSRZones()
          newZone.isResistance = true;
          newZone.touchCount = 0;
          
-         // Add if not too close to existing zones
-         bool tooClose = false;
-         for(int j = 0; j < ArraySize(g_activeResistanceZones); j++)
-         {
-            if(MathAbs(newZone.definingClose - g_activeResistanceZones[j].definingClose) < sensitivityValue)
-            {
-               tooClose = true;
-               break;
-            }
-         }
+         // Generate unique IDs for chart objects
+         newZone.chartObjectID_Top = ChartID() + "_ResTop_" + IntegerToString(i);
+         newZone.chartObjectID_Bottom = ChartID() + "_ResBottom_" + IntegerToString(i);
          
-         if(!tooClose)
-         {
-            int size = ArraySize(g_activeResistanceZones);
-            ArrayResize(g_activeResistanceZones, size + 1);
-            g_activeResistanceZones[size] = newZone;
-         }
+         AddZoneIfValid(newZone, g_activeResistanceZones, sensitivityValue);
       }
       
       // Check for potential support
@@ -554,68 +561,128 @@ void UpdateAndDrawValidSRZones()
          newZone.isResistance = false;
          newZone.touchCount = 0;
          
-         // Add if not too close to existing zones
-         bool tooClose = false;
-         for(int j = 0; j < ArraySize(g_activeSupportZones); j++)
-         {
-            if(MathAbs(newZone.definingClose - g_activeSupportZones[j].definingClose) < sensitivityValue)
-            {
-               tooClose = true;
-               break;
-            }
-         }
+         // Generate unique IDs for chart objects
+         newZone.chartObjectID_Top = ChartID() + "_SupTop_" + IntegerToString(i);
+         newZone.chartObjectID_Bottom = ChartID() + "_SupBottom_" + IntegerToString(i);
          
-         if(!tooClose)
-         {
-            int size = ArraySize(g_activeSupportZones);
-            ArrayResize(g_activeSupportZones, size + 1);
-            g_activeSupportZones[size] = newZone;
-         }
+         AddZoneIfValid(newZone, g_activeSupportZones, sensitivityValue);
       }
    }
    
-   // Count touches for each zone
+   // Draw zones and update touch counts
+   DrawAndValidateZones(rates, sensitivityValue);
+   
+   Print("UpdateAndDrawValidSRZones: Found ", ArraySize(g_activeSupportZones), " support zones and ",
+         ArraySize(g_activeResistanceZones), " resistance zones");
+}
+
+//+------------------------------------------------------------------+
+//| Add zone if it's valid (not too close to existing zones)          |
+//+------------------------------------------------------------------+
+void AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity)
+{
+   for(int j = 0; j < ArraySize(existingZones); j++)
+   {
+      if(MathAbs(newZone.definingClose - existingZones[j].definingClose) < sensitivity)
+         return;
+   }
+   
+   int size = ArraySize(existingZones);
+   ArrayResize(existingZones, size + 1);
+   existingZones[size] = newZone;
+}
+
+//+------------------------------------------------------------------+
+//| Draw zones and validate touches                                    |
+//+------------------------------------------------------------------+
+void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
+{
    double currentPrice = rates[0].close;
    
+   // Draw and validate resistance zones
    for(int i = 0; i < ArraySize(g_activeResistanceZones); i++)
    {
-      for(int j = 0; j < SR_Lookback; j++)
-      {
-         if(MathAbs(rates[j].high - g_activeResistanceZones[i].topBoundary) <= sensitivityValue)
-            g_activeResistanceZones[i].touchCount++;
-      }
+      // Draw zone lines
+      DrawZoneLines(g_activeResistanceZones[i], clrRed);
       
-      // Find nearest resistance above current price
+      // Count touches
+      g_activeResistanceZones[i].touchCount = CountTouches(rates, g_activeResistanceZones[i], sensitivity);
+      
+      // Update nearest resistance
       if(g_activeResistanceZones[i].bottomBoundary > currentPrice)
       {
          if(g_nearestResistanceZoneIndex == -1 || 
-            (g_nearestResistanceZoneIndex < ArraySize(g_activeResistanceZones) &&
-             g_activeResistanceZones[i].bottomBoundary < g_activeResistanceZones[g_nearestResistanceZoneIndex].bottomBoundary))
+            g_activeResistanceZones[i].bottomBoundary < g_activeResistanceZones[g_nearestResistanceZoneIndex].bottomBoundary)
          {
             g_nearestResistanceZoneIndex = i;
          }
       }
    }
    
+   // Draw and validate support zones
    for(int i = 0; i < ArraySize(g_activeSupportZones); i++)
    {
-      for(int j = 0; j < SR_Lookback; j++)
-      {
-         if(MathAbs(rates[j].low - g_activeSupportZones[i].bottomBoundary) <= sensitivityValue)
-            g_activeSupportZones[i].touchCount++;
-      }
+      // Draw zone lines
+      DrawZoneLines(g_activeSupportZones[i], clrGreen);
       
-      // Find nearest support below current price
+      // Count touches
+      g_activeSupportZones[i].touchCount = CountTouches(rates, g_activeSupportZones[i], sensitivity);
+      
+      // Update nearest support
       if(g_activeSupportZones[i].topBoundary < currentPrice)
       {
          if(g_nearestSupportZoneIndex == -1 || 
-            (g_nearestSupportZoneIndex < ArraySize(g_activeSupportZones) &&
-             g_activeSupportZones[i].topBoundary > g_activeSupportZones[g_nearestSupportZoneIndex].topBoundary))
+            g_activeSupportZones[i].topBoundary > g_activeSupportZones[g_nearestSupportZoneIndex].topBoundary)
          {
             g_nearestSupportZoneIndex = i;
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Draw individual zone lines                                         |
+//+------------------------------------------------------------------+
+void DrawZoneLines(const SRZone &zone, const color lineColor)
+{
+   datetime time1 = TimeCurrent();
+   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 20;
+   
+   // Draw top boundary
+   ObjectCreate(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJ_TREND, 0, 
+               time1, zone.topBoundary, time2, zone.topBoundary);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_COLOR, lineColor);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_STYLE, STYLE_DOT);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Top), OBJPROP_WIDTH, 1);
+   
+   // Draw bottom boundary
+   ObjectCreate(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJ_TREND, 0,
+               time1, zone.bottomBoundary, time2, zone.bottomBoundary);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_COLOR, lineColor);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_STYLE, STYLE_DOT);
+   ObjectSetInteger(0, "SRZone_" + IntegerToString(zone.chartObjectID_Bottom), OBJPROP_WIDTH, 1);
+}
+
+//+------------------------------------------------------------------+
+//| Count touches for a zone                                           |
+//+------------------------------------------------------------------+
+int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity)
+{
+   int touches = 0;
+   for(int j = 0; j < SR_Lookback; j++)
+   {
+      if(zone.isResistance)
+      {
+         if(MathAbs(rates[j].high - zone.topBoundary) <= sensitivity)
+            touches++;
+      }
+      else
+      {
+         if(MathAbs(rates[j].low - zone.bottomBoundary) <= sensitivity)
+            touches++;
+      }
+   }
+   return touches;
 }
 
 //+------------------------------------------------------------------+
