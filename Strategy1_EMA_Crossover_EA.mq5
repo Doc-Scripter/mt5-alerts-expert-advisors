@@ -8,6 +8,8 @@
 #property version   "1.00"
 #property strict
 
+#include "include/CommonPatternDetection.mqh"
+
 // Strategy-specific Magic Number
 #define MAGIC_NUMBER 111111
 
@@ -31,8 +33,6 @@ input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakev
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
 
 // Global variables
-int emaHandle;
-double emaValues[];
 long barCount;
 double volMin, volMax, volStep;
 double g_lastEmaCrossPrice = 0.0;
@@ -82,13 +82,8 @@ int OnInit()
    }
    
    // Initialize EMA indicator
-   emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_PERIOD, 0, MODE_EMA, PRICE_CLOSE);
-   
-   if(emaHandle == INVALID_HANDLE)
-   {
-      Print("Failed to create EMA indicator handle");
+   if(!InitializeEMA())
       return(INIT_FAILED);
-   }
    
    // Initialize barCount
    barCount = Bars(_Symbol, PERIOD_CURRENT);
@@ -123,8 +118,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   if(emaHandle != INVALID_HANDLE)
-      IndicatorRelease(emaHandle);
+   ReleaseEMA();
       
    if(Use_Trend_Filter)
    {
@@ -161,12 +155,11 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
-   ArraySetAsSeries(emaValues, true);
-   if(CopyBuffer(emaHandle, 0, 0, 3, emaValues) < 3)
-   {
-      Print("Failed to copy EMA values");
+   // Update EMA and draw it
+   if(!UpdateEMAValues(4))
       return false;
-   }
+   
+   DrawEMALine();
    
    if(Use_Trend_Filter)
    {
@@ -187,53 +180,6 @@ bool UpdateIndicators()
 }
 
 //+------------------------------------------------------------------+
-//| Check for engulfing pattern                                       |
-//+------------------------------------------------------------------+
-bool IsEngulfing(int shift, bool bullish)
-{
-   int i = shift;
-   int priorIdx = i + 1;
-   
-   double open1 = iOpen(_Symbol, PERIOD_CURRENT, i);
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
-   double open2 = iOpen(_Symbol, PERIOD_CURRENT, priorIdx);
-   double close2 = iClose(_Symbol, PERIOD_CURRENT, priorIdx);
-   
-   if(open1 == 0 || close1 == 0 || open2 == 0 || close2 == 0)
-      return false;
-      
-   double tolerance = _Point;
-   
-   bool trendOkBull = !Use_Trend_Filter;
-   bool trendOkBear = !Use_Trend_Filter;
-   
-   if(Use_Trend_Filter)
-   {
-      double maPrior = emaValues[priorIdx];
-      double midOCPrior = (open2 + close2) / 2.0;
-      trendOkBull = midOCPrior < maPrior;
-      trendOkBear = midOCPrior > maPrior;
-   }
-   
-   if(bullish)
-   {
-      bool priorIsBearish = (close2 < open2 - tolerance);
-      bool currentIsBullish = (close1 > open1 + tolerance);
-      bool engulfsBody = (open1 < close2 - tolerance) && (close1 > open2 + tolerance);
-      
-      return priorIsBearish && currentIsBullish && engulfsBody && trendOkBull;
-   }
-   else
-   {
-      bool priorIsBullish = (close2 > open2 + tolerance);
-      bool currentIsBearish = (close1 < open1 - tolerance);
-      bool engulfsBody = (open1 > close2 + tolerance) && (close1 < open2 - tolerance);
-      
-      return priorIsBullish && currentIsBearish && engulfsBody && trendOkBear;
-   }
-}
-
-//+------------------------------------------------------------------+
 //| Check strategy conditions                                         |
 //+------------------------------------------------------------------+
 void CheckStrategy()
@@ -248,8 +194,8 @@ void CheckStrategy()
    double high1 = iHigh(_Symbol, PERIOD_CURRENT, 1);
    
    // Check bullish setup
-   bool bullishCrossover = (low1 <= emaValues[1] && close1 > emaValues[1]);
-   bool bullishEngulfing = IsEngulfing(1, true);
+   bool bullishCrossover = (low1 <= g_ema.values[1] && close1 > g_ema.values[1]);
+   bool bullishEngulfing = IsEngulfing(1, true, Use_Trend_Filter);
    
    if(bullishCrossover && bullishEngulfing)
    {
@@ -265,8 +211,8 @@ void CheckStrategy()
    }
    
    // Check bearish setup
-   bool bearishCrossover = (high1 >= emaValues[1] && close1 < emaValues[1]);
-   bool bearishEngulfing = IsEngulfing(1, false);
+   bool bearishCrossover = (high1 >= g_ema.values[1] && close1 < g_ema.values[1]);
+   bool bearishEngulfing = IsEngulfing(1, false, Use_Trend_Filter);
    
    if(bearishCrossover && bearishEngulfing)
    {

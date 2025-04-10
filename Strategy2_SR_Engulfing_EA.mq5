@@ -47,9 +47,9 @@ input int         SR_Min_Touches = 2;   // Minimum touches required for a zone t
 input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven (0=disabled)
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
 
+#include "include/CommonPatternDetection.mqh"
+
 // Global Variables
-int emaHandle;
-double emaValues[];
 long barCount;
 double volMin, volMax, volStep;
 datetime g_lastTradeTime = 0;
@@ -78,10 +78,12 @@ int g_nearestResistanceZoneIndex = -1;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   Print("OnInit: Starting initialization...");
+   
    // Check if automated trading is allowed
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
    {
-      Print("Automated trading is not allowed. Please enable it in MetaTrader 5.");
+      Print("OnInit: Automated trading is not allowed. Please enable it in MetaTrader 5.");
       return(INIT_FAILED);
    }
    
@@ -104,31 +106,41 @@ int OnInit()
    }
    
    // Initialize EMA indicator
-   emaHandle = iMA(_Symbol, PERIOD_CURRENT, EMA_PERIOD, 0, MODE_EMA, PRICE_CLOSE);
-   
-   if(emaHandle == INVALID_HANDLE)
+   Print("OnInit: Initializing EMA indicator...");
+   if(!InitializeEMA())
    {
-      Print("Failed to create EMA indicator handle");
+      Print("OnInit: Failed to initialize EMA indicator");
       return(INIT_FAILED);
    }
    
    // Initialize barCount
    barCount = Bars(_Symbol, PERIOD_CURRENT);
+   Print("OnInit: Initial bar count is ", barCount);
    
    // Initialize trend filter indicators
    if(Use_Trend_Filter)
    {
+      Print("OnInit: Initializing trend filter indicators...");
+      
+      Print("OnInit: Creating Fast EMA indicator...");
       trendFastEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 20, 0, MODE_EMA, PRICE_CLOSE);
+      
+      Print("OnInit: Creating Slow EMA indicator...");
       trendSlowEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 50, 0, MODE_EMA, PRICE_CLOSE);
+      
+      Print("OnInit: Creating ADX indicator...");
       trendAdxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
       
       if(trendFastEmaHandle == INVALID_HANDLE || 
          trendSlowEmaHandle == INVALID_HANDLE || 
          trendAdxHandle == INVALID_HANDLE)
       {
-         Print("Failed to create trend filter indicator handles");
+         Print("OnInit: Failed to create trend filter indicators. Handles: Fast EMA=", trendFastEmaHandle,
+               ", Slow EMA=", trendSlowEmaHandle, ", ADX=", trendAdxHandle);
          return(INIT_FAILED);
       }
+      
+      Print("OnInit: Successfully created trend filter indicators");
    }
    
    // Clear S/R zone arrays
@@ -149,21 +161,38 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   if(emaHandle != INVALID_HANDLE)
-      IndicatorRelease(emaHandle);
+   Print("OnDeinit: Starting cleanup with reason code ", reason);
+   
+   Print("OnDeinit: Releasing EMA indicator...");
+   ReleaseEMA();
       
    if(Use_Trend_Filter)
    {
+      Print("OnDeinit: Releasing trend filter indicators...");
       if(trendFastEmaHandle != INVALID_HANDLE)
+      {
+         Print("OnDeinit: Releasing Fast EMA handle ", trendFastEmaHandle);
          IndicatorRelease(trendFastEmaHandle);
+      }
       if(trendSlowEmaHandle != INVALID_HANDLE)
+      {
+         Print("OnDeinit: Releasing Slow EMA handle ", trendSlowEmaHandle);
          IndicatorRelease(trendSlowEmaHandle);
+      }
       if(trendAdxHandle != INVALID_HANDLE)
+      {
+         Print("OnDeinit: Releasing ADX handle ", trendAdxHandle);
          IndicatorRelease(trendAdxHandle);
+      }
    }
    
+   Print("OnDeinit: Cleaning up S/R zone lines...");
    DeleteAllSRZoneLines();
+   
+   Print("OnDeinit: Killing timer...");
    EventKillTimer();
+   
+   Print("OnDeinit: Cleanup complete");
 }
 
 //+------------------------------------------------------------------+
@@ -191,19 +220,29 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
-   // Initialize arrays with proper size (need more than 3 bars for strategy checks)
-   int requiredBars = SHIFT_TO_CHECK + 4; // Need enough bars for strategy checks
-   ArrayResize(emaValues, requiredBars);
-   ArraySetAsSeries(emaValues, true);
-   if(CopyBuffer(emaHandle, 0, 0, requiredBars, emaValues) < requiredBars)
+   Print("UpdateIndicators: Starting update...");
+   
+   // Update EMA and draw it
+   int barsNeeded = SHIFT_TO_CHECK + 4;
+   Print("UpdateIndicators: Requesting ", barsNeeded, " bars for EMA");
+   
+   if(!UpdateEMAValues(barsNeeded))
    {
-      Print("Failed to copy EMA values");
+      Print("UpdateIndicators: Failed to update EMA values");
       return false;
    }
    
+   Print("UpdateIndicators: Drawing EMA line");
+   DrawEMALine();
+   
    if(Use_Trend_Filter)
    {
+      Print("UpdateIndicators: Updating trend filter indicators");
+      
       // Initialize trend filter arrays with proper size
+      int requiredBars = SHIFT_TO_CHECK + 4;
+      Print("UpdateIndicators: Resizing trend arrays for ", requiredBars, " bars");
+      
       ArrayResize(trendFastEmaValues, requiredBars);
       ArrayResize(trendSlowEmaValues, requiredBars);
       ArrayResize(trendAdxValues, requiredBars);
@@ -224,55 +263,6 @@ bool UpdateIndicators()
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| Check for engulfing pattern                                       |
-//+------------------------------------------------------------------+
-bool IsEngulfing(int shift, bool bullish)
-{
-   int i = shift;
-   int priorIdx = i + 1;
-   
-   double open1 = iOpen(_Symbol, PERIOD_CURRENT, i);
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
-   double open2 = iOpen(_Symbol, PERIOD_CURRENT, priorIdx);
-   double close2 = iClose(_Symbol, PERIOD_CURRENT, priorIdx);
-   
-   if(open1 == 0 || close1 == 0 || open2 == 0 || close2 == 0)
-      return false;
-      
-   double tolerance = _Point;
-   
-   bool trendOkBull = !Use_Trend_Filter;
-   bool trendOkBear = !Use_Trend_Filter;
-   
-   if(Use_Trend_Filter)
-   {
-      if(priorIdx >= ArraySize(emaValues))
-         return false;
-         
-      double maPrior = emaValues[priorIdx];
-      double midOCPrior = (open2 + close2) / 2.0;
-      trendOkBull = midOCPrior < maPrior;
-      trendOkBear = midOCPrior > maPrior;
-   }
-   
-   if(bullish)
-   {
-      bool priorIsBearish = (close2 < open2 - tolerance);
-      bool currentIsBullish = (close1 > open1 + tolerance);
-      bool engulfsBody = (open1 < close2 - tolerance) && (close1 > open2 + tolerance);
-      
-      return priorIsBearish && currentIsBullish && engulfsBody && trendOkBull;
-   }
-   else
-   {
-      bool priorIsBullish = (close2 > open2 + tolerance);
-      bool currentIsBearish = (close1 < open1 - tolerance);
-      bool engulfsBody = (open1 > close2 + tolerance) && (close1 < open2 - tolerance);
-      
-      return priorIsBullish && currentIsBearish && engulfsBody && trendOkBear;
-   }
-}
 
 //+------------------------------------------------------------------+
 //| Check strategy conditions                                         |
@@ -285,7 +275,7 @@ void CheckStrategy()
    double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
    
    // Check bullish engulfing at support
-   bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true);
+   bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true, Use_Trend_Filter);
    if(isBullishEngulfing && g_nearestSupportZoneIndex != -1 && 
       g_nearestSupportZoneIndex < ArraySize(g_activeSupportZones))
    {
@@ -295,10 +285,10 @@ void CheckStrategy()
                                   closePrice <= nearestSupport.topBoundary);
                                   
       bool priceBelowEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(emaValues); i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(g_ema.values); i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(close < emaValues[i])
+         if(close < g_ema.values[i])
          {
             priceBelowEMARecently = true;
             break;
@@ -321,7 +311,7 @@ void CheckStrategy()
    }
    
    // Check bearish engulfing at resistance
-   bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false);
+   bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false, Use_Trend_Filter);
    if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1 &&
       g_nearestResistanceZoneIndex < ArraySize(g_activeResistanceZones))
    {
@@ -331,10 +321,10 @@ void CheckStrategy()
                                   closePrice <= nearestResistance.topBoundary);
                                   
       bool priceAboveEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(emaValues); i++)
+      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3 && i < ArraySize(g_ema.values); i++)
       {
          double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(close > emaValues[i])
+         if(close > g_ema.values[i])
          {
             priceAboveEMARecently = true;
             break;
@@ -453,10 +443,26 @@ bool IsStrategyOnCooldown()
 //+------------------------------------------------------------------+
 int GetTrendState()
 {
-   if(!Use_Trend_Filter) return TREND_RANGING;
+   Print("GetTrendState: Checking trend state...");
    
-   if(ArraySize(trendFastEmaValues) == 0 || ArraySize(trendSlowEmaValues) == 0 || ArraySize(trendAdxValues) == 0)
+   if(!Use_Trend_Filter)
+   {
+      Print("GetTrendState: Trend filter disabled, returning RANGING");
       return TREND_RANGING;
+   }
+   
+   int fastSize = ArraySize(trendFastEmaValues);
+   int slowSize = ArraySize(trendSlowEmaValues);
+   int adxSize = ArraySize(trendAdxValues);
+   
+   Print("GetTrendState: Array sizes - Fast EMA: ", fastSize,
+         ", Slow EMA: ", slowSize, ", ADX: ", adxSize);
+   
+   if(fastSize == 0 || slowSize == 0 || adxSize == 0)
+   {
+      Print("GetTrendState: Missing indicator data, returning RANGING");
+      return TREND_RANGING;
+   }
    
    double fastEMA = trendFastEmaValues[0];
    double slowEMA = trendSlowEmaValues[0];
@@ -465,8 +471,22 @@ int GetTrendState()
    bool isStrong = (adxValue > 25.0);
    bool isBullish = (fastEMA > slowEMA);
    
-   if(isStrong && isBullish) return TREND_BULLISH;
-   if(isStrong && !isBullish) return TREND_BEARISH;
+   Print("GetTrendState: Values - Fast EMA: ", fastEMA,
+         ", Slow EMA: ", slowEMA, ", ADX: ", adxValue,
+         " (Strong: ", isStrong, ", Bullish: ", isBullish, ")");
+   
+   if(isStrong && isBullish)
+   {
+      Print("GetTrendState: Strong bullish trend detected");
+      return TREND_BULLISH;
+   }
+   if(isStrong && !isBullish)
+   {
+      Print("GetTrendState: Strong bearish trend detected");
+      return TREND_BEARISH;
+   }
+   
+   Print("GetTrendState: No strong trend detected, returning RANGING");
    return TREND_RANGING;
 }
 

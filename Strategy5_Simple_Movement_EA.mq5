@@ -25,12 +25,15 @@ enum ENUM_LOT_SIZING_MODE
 
 // Input Parameters
 input double      Lot_Size = 1.0;     // Entry lot size (used if LotSizing_Mode=DYNAMIC_MARGIN_CHECK)
+input bool        Use_Trend_Filter = false;   // Enable/Disable the main Trend Filter
 input ENUM_LOT_SIZING_MODE LotSizing_Mode = DYNAMIC_MARGIN_CHECK; // Lot sizing strategy
 input int         Min_Body_Pips = 1;   // Minimum candle body size in pips
 input int         TP_Pips = 10;        // Take Profit distance in pips
 input bool        DisableTP = true;    // Disable take profit, only use trailing stop
 input int         Trail_Activation_Pips = 10; // Pips in profit to activate trailing stop
 input int         Trail_Pips = 5;      // Trailing stop distance in pips
+
+#include "include/CommonPatternDetection.mqh"
 
 // Global Variables
 long barCount;
@@ -45,6 +48,10 @@ datetime g_lastTradeTime = 0;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // Initialize EMA indicator
+   if(!InitializeEMA())
+      return(INIT_FAILED);
+      
    // Check if automated trading is allowed
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
    {
@@ -81,7 +88,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Nothing to clean up for this strategy
+   ReleaseEMA();
 }
 
 //+------------------------------------------------------------------+
@@ -98,8 +105,24 @@ void OnTick()
    }
    barCount = currentBars;
    
+   // Update indicators
+   if(!UpdateIndicators()) return;
+   
    // Check strategy conditions
    CheckStrategy();
+}
+
+//+------------------------------------------------------------------+
+//| Update indicator values                                           |
+//+------------------------------------------------------------------+
+bool UpdateIndicators()
+{
+   // Update EMA and draw it
+   if(!UpdateEMAValues(4))
+      return false;
+      
+   DrawEMALine();
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -119,9 +142,12 @@ void CheckStrategy()
    double bodySize = MathAbs(close1 - open1);
    double bodySizePips = bodySize / _Point;
    
-   if(bodySizePips > Min_Body_Pips)
+   // Check price movement and engulfing pattern
+   bool isBuy = (close1 > open1);
+   bool hasEngulfing = IsEngulfing(shift, isBuy, Use_Trend_Filter);
+   
+   if(bodySizePips > Min_Body_Pips && hasEngulfing)
    {
-      bool isBuy = (close1 > open1);
       
       if(isBuy)
       {
