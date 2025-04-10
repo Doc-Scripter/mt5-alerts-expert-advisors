@@ -3,6 +3,11 @@
 
 // Constants
 #define SR_MIN_TOUCHES 2
+#define ZONE_LOOKBACK 200  // Extended lookback for zone detection
+
+// Colors for zones
+color SUPPORT_ZONE_COLOR = clrRed;
+color RESISTANCE_ZONE_COLOR = clrBlue;
 
 // Support/Resistance Zone Structure
 struct SRZone
@@ -79,19 +84,32 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
     g_nearestSupportZoneIndex = -1;
     g_nearestResistanceZoneIndex = -1;
     
+    // Get EMA values for zone validation
+    double emaValues[];
+    ArraySetAsSeries(emaValues, true);
+    copied = CopyBuffer(g_ema.handle, 0, 0, lookbackPeriod, emaValues);
+    if(copied != lookbackPeriod)
+    {
+        Print("Failed to copy EMA values. Error: ", GetLastError());
+        return;
+    }
+    
     // Look for new zones
     for(int i = 1; i < lookbackPeriod; i++)
     {
-        // Check for potential resistance
-        if(rates[i].close > rates[i-1].close && rates[i].close > rates[i+1].close)
+        double emaValue = emaValues[i];
+        
+        // Check for potential resistance (must be above EMA)
+        if(rates[i].close > emaValue && rates[i].close > rates[i-1].close && rates[i].close > rates[i+1].close)
         {
             SRZone newZone;
             newZone.definingClose = rates[i].close;
+            // Use lowest open/close for zone boundaries
+            newZone.bottomBoundary = MathMin(rates[i].open, rates[i].close);
             newZone.topBoundary = MathMax(rates[i+1].high, MathMax(rates[i].high, rates[i-1].high));
-            newZone.bottomBoundary = newZone.definingClose;
             newZone.isResistance = true;
             newZone.touchCount = 0;
-            newZone.shift = i;  // Add this line when creating resistance zones
+            newZone.shift = i;
             
             // Generate unique IDs for chart objects
             newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i));
@@ -100,16 +118,17 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
             AddZoneIfValid(newZone, g_activeResistanceZones, sensitivityValue);
         }
         
-        // Check for potential support
-        if(rates[i].close < rates[i-1].close && rates[i].close < rates[i+1].close)
+        // Check for potential support (must be below EMA)
+        if(rates[i].close < emaValue && rates[i].close < rates[i-1].close && rates[i].close < rates[i+1].close)
         {
             SRZone newZone;
             newZone.definingClose = rates[i].close;
+            // Use lowest open/close for zone boundaries
             newZone.bottomBoundary = MathMin(rates[i+1].low, MathMin(rates[i].low, rates[i-1].low));
-            newZone.topBoundary = newZone.definingClose;
+            newZone.topBoundary = MathMax(rates[i].open, rates[i].close);
             newZone.isResistance = false;
             newZone.touchCount = 0;
-            newZone.shift = i;  // Add this line when creating support zones
+            newZone.shift = i;
             
             // Generate unique IDs for chart objects
             newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i+2));
@@ -165,16 +184,16 @@ void DrawZoneLines(const SRZone &zone, const color lineColor)
    color zoneColor = lineColor;
    
    // Top line properties
-   ObjectSetInteger(0, topName, OBJPROP_COLOR, zoneColor);
-   ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, topName, OBJPROP_COLOR, zone.isResistance ? RESISTANCE_ZONE_COLOR : SUPPORT_ZONE_COLOR);
+   ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_SOLID);
    ObjectSetInteger(0, topName, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, topName, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
    
    // Bottom line properties
-   ObjectSetInteger(0, bottomName, OBJPROP_COLOR, zoneColor);
-   ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, bottomName, OBJPROP_COLOR, zone.isResistance ? RESISTANCE_ZONE_COLOR : SUPPORT_ZONE_COLOR);
+   ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_SOLID);
    ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, bottomName, OBJPROP_HIDDEN, true);
@@ -257,23 +276,35 @@ void AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity
 //+------------------------------------------------------------------+
 bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 {
-   // Need at least 2 candles to confirm a break (open and close beyond the zone)
    if(shift + 1 >= ArraySize(rates)) return false;
    
    if(zone.isResistance)
    {
-      // Zone is broken if we have a candle that opened and closed above the top
-      return (rates[shift].open > zone.topBoundary && 
-              rates[shift].close > zone.topBoundary &&
-              rates[shift+1].close > zone.topBoundary);
+      // Price action must form above the zone
+      if(rates[shift].open > zone.topBoundary && rates[shift].close > zone.topBoundary)
+      {
+         // Confirm with previous candle
+         if(rates[shift+1].open > zone.topBoundary && rates[shift+1].close > zone.topBoundary)
+         {
+            Print("Resistance zone broken at ", TimeToString(rates[shift].time));
+            return true;
+         }
+      }
    }
    else
    {
-      // Zone is broken if we have a candle that opened and closed below the bottom
-      return (rates[shift].open < zone.bottomBoundary && 
-              rates[shift].close < zone.bottomBoundary &&
-              rates[shift+1].close < zone.bottomBoundary);
+      // Price action must form below the zone
+      if(rates[shift].open < zone.bottomBoundary && rates[shift].close < zone.bottomBoundary)
+      {
+         // Confirm with previous candle
+         if(rates[shift+1].open < zone.bottomBoundary && rates[shift+1].close < zone.bottomBoundary)
+         {
+            Print("Support zone broken at ", TimeToString(rates[shift].time));
+            return true;
+         }
+      }
    }
+   return false;
 }
 
 //+------------------------------------------------------------------+
