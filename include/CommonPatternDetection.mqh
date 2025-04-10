@@ -208,29 +208,36 @@ void DrawEMALine()
    }
    
    int bars = ArraySize(g_ema.values);
-   if(bars < 3)
+   if(bars < EMA_PERIOD)  // Changed from 3 to EMA_PERIOD
    {
-      Print("DrawEMALine: Insufficient bars for visualization. Available: ", bars);
+      Print("DrawEMALine: Insufficient bars for EMA visualization. Available: ", bars, ", Need: ", EMA_PERIOD);
       return;
    }
    
-   // Delete ALL possible EMA lines first
+   // Delete existing EMA lines
    ObjectsDeleteAll(0, "EMA_Line");
    
-   // Use available bars for visualization
-   int lookback = MathMin(10, bars - 1);
+   // Draw EMA line segments connecting all available points
+   datetime time1, time2;
+   double price1, price2;
    
-   string objName = "EMA_Line";
-   ObjectCreate(0, objName, OBJ_TREND, 0, 
-      iTime(_Symbol, PERIOD_CURRENT, lookback), g_ema.values[lookback],
-      iTime(_Symbol, PERIOD_CURRENT, 0), g_ema.values[0]);
+   for(int i = 1; i < bars; i++)
+   {
+      string objName = "EMA_Line_" + IntegerToString(i);
+      
+      time1 = iTime(_Symbol, PERIOD_CURRENT, i);
+      time2 = iTime(_Symbol, PERIOD_CURRENT, i-1);
+      price1 = g_ema.values[i];
+      price2 = g_ema.values[i-1];
+      
+      ObjectCreate(0, objName, OBJ_TREND, 0, time1, price1, time2, price2);
+      ObjectSetInteger(0, objName, OBJPROP_COLOR, EMA_LINE_COLOR);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, objName, OBJPROP_RAY_LEFT, false);
+      ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, objName, OBJPROP_BACK, false);
+   }
    
-   // Set line properties
-   ObjectSetInteger(0, objName, OBJPROP_COLOR, EMA_LINE_COLOR);
-   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, false);
-   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, objName, OBJPROP_BACK, false);
-   
-   ChartRedraw(0);  // Force chart redraw to ensure clean display
+   ChartRedraw(0);
 }
