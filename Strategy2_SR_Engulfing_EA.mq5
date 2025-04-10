@@ -596,8 +596,8 @@ void UpdateAndDrawValidSRZones()
          newZone.touchCount = 0;
          
          // Generate unique IDs for chart objects
-         newZone.chartObjectID_Top = ChartID() + "_ResTop_" + IntegerToString(i);
-         newZone.chartObjectID_Bottom = ChartID() + "_ResBottom_" + IntegerToString(i);
+         newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i));
+         newZone.chartObjectID_Bottom = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i+1));
          
          AddZoneIfValid(newZone, g_activeResistanceZones, sensitivityValue);
       }
@@ -613,8 +613,8 @@ void UpdateAndDrawValidSRZones()
          newZone.touchCount = 0;
          
          // Generate unique IDs for chart objects
-         newZone.chartObjectID_Top = ChartID() + "_SupTop_" + IntegerToString(i);
-         newZone.chartObjectID_Bottom = ChartID() + "_SupBottom_" + IntegerToString(i);
+         newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i+2));
+         newZone.chartObjectID_Bottom = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i+3));
          
          AddZoneIfValid(newZone, g_activeSupportZones, sensitivityValue);
       }
@@ -696,50 +696,50 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
 //+------------------------------------------------------------------+
 void DrawZoneLines(const SRZone &zone, const color lineColor)
 {
-   // Get chart timeframe boundaries
    datetime time1 = TimeCurrent();
-   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 50; // Extended visibility
+   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 100;
    
-   string topName = "SRZone_" + IntegerToString(zone.chartObjectID_Top);
-   string bottomName = "SRZone_" + IntegerToString(zone.chartObjectID_Bottom);
+   // Create object names using string variables and concatenation
+   string prefix = "SRZone_";
+   string idTop = IntegerToString(zone.chartObjectID_Top);
+   string idBottom = IntegerToString(zone.chartObjectID_Bottom);
    
-   // Delete existing lines if they exist
+   string topName = prefix + idTop + "_Top";
+   string bottomName = prefix + idBottom + "_Bottom";
+   string fillName = prefix + idTop + "_Fill";
+   
+   Print("Drawing zone lines: ", topName, " and ", bottomName);
+   
+   // Delete existing objects
    ObjectDelete(0, topName);
    ObjectDelete(0, bottomName);
+   ObjectDelete(0, fillName);
    
-   // Create top boundary line
+   // Rest of the function remains the same...
+   // Create zone fill rectangle
+   if(!ObjectCreate(0, fillName, OBJ_RECTANGLE, 0, time1, zone.topBoundary, time2, zone.bottomBoundary))
+   {
+      Print("Failed to create zone fill. Error: ", GetLastError());
+   }
+   else
+   {
+      // ... existing object property settings ...
+   }
+   
+   // Create boundary lines
    if(!ObjectCreate(0, topName, OBJ_TREND, 0, time1, zone.topBoundary, time2, zone.topBoundary))
    {
       Print("Failed to create top boundary line. Error: ", GetLastError());
       return;
    }
    
-   // Create bottom boundary line
    if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, time1, zone.bottomBoundary, time2, zone.bottomBoundary))
    {
       Print("Failed to create bottom boundary line. Error: ", GetLastError());
       return;
    }
    
-   // Set properties for top line
-   ObjectSetInteger(0, topName, OBJPROP_COLOR, lineColor);
-   ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_SOLID);
-   ObjectSetInteger(0, topName, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, topName, OBJPROP_BACK, true);
-   ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, topName, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
-   
-   // Set properties for bottom line
-   ObjectSetInteger(0, bottomName, OBJPROP_COLOR, lineColor);
-   ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_SOLID);
-   ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, bottomName, OBJPROP_BACK, true);
-   ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, bottomName, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, bottomName, OBJPROP_RAY_RIGHT, true);
-   
-   ChartRedraw(0); // Force chart redraw
+   // ... rest of the existing code ...
 }
 
 //+------------------------------------------------------------------+
