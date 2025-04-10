@@ -166,7 +166,7 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
    {
       bool priorIsBullish = (close2 > open2 + tolerance);
       bool currentIsBearish = (close1 < open1 - tolerance);
-      bool engulfsBody = (open1 > close2 + tolerance) && (close1 < open2 - tolerance);
+      bool engulfsBody = (open1 > close2 + tolerance) && (open1 < open2 - tolerance);
       
    if(priorIsBullish && currentIsBearish && engulfsBody && trendOkBear)
    {
@@ -184,16 +184,29 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
 //+------------------------------------------------------------------+
 void DrawEngulfingPattern(int shift, bool bullish)
 {
-   string objName = "Engulfing_" + IntegerToString(shift);
-   double high = iHigh(_Symbol, PERIOD_CURRENT, shift);
-   double low = iLow(_Symbol, PERIOD_CURRENT, shift);
-   datetime time = iTime(_Symbol, PERIOD_CURRENT, shift);
-   
-   ObjectDelete(0, objName);
-   ObjectCreate(0, objName, OBJ_ARROW, 0, time, bullish ? low : high);
-   ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, bullish ? 225 : 226);
-   ObjectSetInteger(0, objName, OBJPROP_COLOR, bullish ? ENGULFING_BULLISH_COLOR : ENGULFING_BEARISH_COLOR);
-   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+    string objName = "EngulfPattern_" + IntegerToString(TimeCurrent() + shift);
+    datetime patternTime = iTime(_Symbol, PERIOD_CURRENT, shift);
+    double patternPrice = bullish ? iLow(_Symbol, PERIOD_CURRENT, shift) - 10 * _Point 
+                                : iHigh(_Symbol, PERIOD_CURRENT, shift) + 10 * _Point;
+    
+    // Delete existing object if it exists
+    ObjectDelete(0, objName);
+    
+    // Create arrow object
+    if(!ObjectCreate(0, objName, OBJ_ARROW, 0, patternTime, patternPrice))
+    {
+        Print("Failed to create engulfing pattern marker. Error: ", GetLastError());
+        return;
+    }
+    
+    // Set object properties
+    ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, bullish ? 233 : 234);  // Up/Down arrow
+    ObjectSetInteger(0, objName, OBJPROP_COLOR, bullish ? ENGULFING_BULLISH_COLOR : ENGULFING_BEARISH_COLOR);
+    ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+    ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
+    
+    ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
