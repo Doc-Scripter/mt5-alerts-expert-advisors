@@ -25,7 +25,7 @@ CEMAValues g_ema;
 // Pattern Detection Colors
 color ENGULFING_BULLISH_COLOR = clrLime;
 color ENGULFING_BEARISH_COLOR = clrRed;
-color EMA_LINE_COLOR = clrBlue;
+color EMA_LINE_COLOR = clrRed;  // Changed from clrBlue to clrRed
 
 //+------------------------------------------------------------------+
 //| Initialize EMA indicator                                          |
@@ -208,21 +208,29 @@ void DrawEMALine()
    }
    
    int bars = ArraySize(g_ema.values);
-   if(bars < 3)  // Minimum bars for basic visualization
+   if(bars < 3)
    {
       Print("DrawEMALine: Insufficient bars for visualization. Available: ", bars);
       return;
    }
    
+   // Delete ALL possible EMA lines first
+   ObjectsDeleteAll(0, "EMA_Line");
+   
    // Use available bars for visualization
    int lookback = MathMin(10, bars - 1);
    
    string objName = "EMA_Line";
-   ObjectDelete(0, objName);
    ObjectCreate(0, objName, OBJ_TREND, 0, 
       iTime(_Symbol, PERIOD_CURRENT, lookback), g_ema.values[lookback],
       iTime(_Symbol, PERIOD_CURRENT, 0), g_ema.values[0]);
+   
+   // Set line properties
    ObjectSetInteger(0, objName, OBJPROP_COLOR, EMA_LINE_COLOR);
    ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, true);
+   ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, objName, OBJPROP_BACK, false);
+   
+   ChartRedraw(0);  // Force chart redraw to ensure clean display
 }
