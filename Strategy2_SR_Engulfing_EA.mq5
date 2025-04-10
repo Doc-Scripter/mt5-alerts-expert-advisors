@@ -22,12 +22,11 @@ struct SRZone
    double topBoundary;
    double bottomBoundary;
    double definingClose;
-   double definingBodyLow;
-   double definingBodyHigh;
-   bool   isResistance;
-   long   chartObjectID_Top;
-   long   chartObjectID_Bottom;
-   int    touchCount;
+   bool isResistance;
+   int touchCount;
+   long chartObjectID_Top;
+   long chartObjectID_Bottom;
+   int shift;     // Add this new field
 };
 
 // Lot Sizing Modes
@@ -594,6 +593,7 @@ void UpdateAndDrawValidSRZones()
          newZone.bottomBoundary = newZone.definingClose;
          newZone.isResistance = true;
          newZone.touchCount = 0;
+         newZone.shift = i;  // Add this line when creating resistance zones
          
          // Generate unique IDs for chart objects
          newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i));
@@ -611,6 +611,7 @@ void UpdateAndDrawValidSRZones()
          newZone.topBoundary = newZone.definingClose;
          newZone.isResistance = false;
          newZone.touchCount = 0;
+         newZone.shift = i;  // Add this line when creating support zones
          
          // Generate unique IDs for chart objects
          newZone.chartObjectID_Top = StringToInteger(IntegerToString(ChartID()) + StringSubstr(TimeToString(TimeCurrent()), 11, 5) + IntegerToString(i+2));
@@ -696,50 +697,56 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
 //+------------------------------------------------------------------+
 void DrawZoneLines(const SRZone &zone, const color lineColor)
 {
-   datetime time1 = TimeCurrent();
-   datetime time2 = time1 + PeriodSeconds(PERIOD_CURRENT) * 100;
+   // Get the time of the candle that created this zone
+   datetime zoneTime = iTime(_Symbol, PERIOD_CURRENT, zone.shift);
+   datetime currentTime = TimeCurrent();
    
-   // Create object names using string variables and concatenation
-   string prefix = "SRZone_";
-   string idTop = IntegerToString(zone.chartObjectID_Top);
-   string idBottom = IntegerToString(zone.chartObjectID_Bottom);
-   
-   string topName = prefix + idTop + "_Top";
-   string bottomName = prefix + idBottom + "_Bottom";
-   string fillName = prefix + idTop + "_Fill";
+   string topName = StringFormat("SRZone_%d_Top", zone.chartObjectID_Top);
+   string bottomName = StringFormat("SRZone_%d_Bottom", zone.chartObjectID_Bottom);
    
    Print("Drawing zone lines: ", topName, " and ", bottomName);
    
    // Delete existing objects
    ObjectDelete(0, topName);
    ObjectDelete(0, bottomName);
-   ObjectDelete(0, fillName);
    
-   // Rest of the function remains the same...
-   // Create zone fill rectangle
-   if(!ObjectCreate(0, fillName, OBJ_RECTANGLE, 0, time1, zone.topBoundary, time2, zone.bottomBoundary))
-   {
-      Print("Failed to create zone fill. Error: ", GetLastError());
-   }
-   else
-   {
-      // ... existing object property settings ...
-   }
-   
-   // Create boundary lines
-   if(!ObjectCreate(0, topName, OBJ_TREND, 0, time1, zone.topBoundary, time2, zone.topBoundary))
+   // Draw horizontal lines from zone creation point to current time
+   if(!ObjectCreate(0, topName, OBJ_TREND, 0, 
+      zoneTime, zone.topBoundary, 
+      currentTime, zone.topBoundary))
    {
       Print("Failed to create top boundary line. Error: ", GetLastError());
       return;
    }
    
-   if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, time1, zone.bottomBoundary, time2, zone.bottomBoundary))
+   if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, 
+      zoneTime, zone.bottomBoundary, 
+      currentTime, zone.bottomBoundary))
    {
       Print("Failed to create bottom boundary line. Error: ", GetLastError());
       return;
    }
    
-   // ... rest of the existing code ...
+   // Set line properties
+   color zoneColor = lineColor;
+   
+   // Top line properties
+   ObjectSetInteger(0, topName, OBJPROP_COLOR, zoneColor);
+   ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, topName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, topName, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
+   
+   // Bottom line properties
+   ObjectSetInteger(0, bottomName, OBJPROP_COLOR, zoneColor);
+   ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bottomName, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, bottomName, OBJPROP_RAY_RIGHT, true);
+   
+   ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
