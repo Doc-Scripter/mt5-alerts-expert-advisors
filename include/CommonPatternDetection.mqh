@@ -209,6 +209,7 @@ void DrawEngulfingPattern(int shift, bool bullish)
     ChartRedraw(0);
 }
 
+
 //+------------------------------------------------------------------+
 //| Draw EMA line                                                     |
 //+------------------------------------------------------------------+
@@ -220,21 +221,21 @@ void DrawEMALine()
       return;
    }
    
-   int bars = ArraySize(g_ema.values);
-   if(bars < EMA_PERIOD)  // Changed from 3 to EMA_PERIOD
+   int available = ArraySize(g_ema.values);
+   if(available < 2)
    {
-      Print("DrawEMALine: Insufficient bars for EMA visualization. Available: ", bars, ", Need: ", EMA_PERIOD);
+      Print("DrawEMALine: Not enough data points. Available: ", available);
       return;
    }
    
    // Delete existing EMA lines
    ObjectsDeleteAll(0, "EMA_Line");
    
-   // Draw EMA line segments connecting all available points
+   // Draw EMA line segments connecting available points
    datetime time1, time2;
    double price1, price2;
    
-   for(int i = 1; i < bars; i++)
+   for(int i = 1; i < available; i++)
    {
       string objName = "EMA_Line_" + IntegerToString(i);
       
@@ -243,7 +244,12 @@ void DrawEMALine()
       price1 = g_ema.values[i];
       price2 = g_ema.values[i-1];
       
-      ObjectCreate(0, objName, OBJ_TREND, 0, time1, price1, time2, price2);
+      if(!ObjectCreate(0, objName, OBJ_TREND, 0, time1, price1, time2, price2))
+      {
+         Print("Failed to create EMA line segment. Error: ", GetLastError());
+         continue;
+      }
+      
       ObjectSetInteger(0, objName, OBJPROP_COLOR, EMA_LINE_COLOR);
       ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
       ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, false);

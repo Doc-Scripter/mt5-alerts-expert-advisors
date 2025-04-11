@@ -50,14 +50,26 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double e
 {
     MqlRates rates[];
     ArraySetAsSeries(rates, true);
-    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, lookbackPeriod, rates) != lookbackPeriod)
+    int available = CopyRates(_Symbol, PERIOD_CURRENT, 0, lookbackPeriod, rates);
+    
+    if(available < 2)  // Need at least 2 bars for comparison
     {
-        Print("Failed to copy rates data");
+        Print("UpdateAndDrawValidSRZones: Insufficient data, bars available: ", available);
         return;
     }
+    
+    // Use available data even if less than requested
+    lookbackPeriod = available;
 
     double sensitivity = sensitivityPips * _Point;
     
+    // Add at the beginning of UpdateAndDrawValidSRZones after getting rates
+    if(rates[0].close == rates[0].high && rates[0].close == rates[0].low)
+    {
+        // Skip invalid/incomplete candles
+        return;
+    }
+
     // Check if current candle breaks any existing zones
     for(int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
@@ -177,51 +189,58 @@ void DrawZoneLines(const SRZone &zone, const color lineColor)
     
     Print("Attempting to draw zone lines: ", topName, " and ", bottomName);
     
-    // Delete any existing lines first (regardless of whether they exist)
+    // Delete any existing lines first
     ObjectDelete(0, topName);
     ObjectDelete(0, bottomName);
     
-    datetime zoneTime = iTime(_Symbol, PERIOD_CURRENT, zone.shift);
-    datetime currentTime = TimeCurrent();
+    // Get time range for the lines
+    datetime startTime = iTime(_Symbol, PERIOD_CURRENT, zone.shift);
+    datetime endTime = iTime(_Symbol, PERIOD_CURRENT, 0) + PeriodSeconds(PERIOD_CURRENT) * 100; // Extend into future
     
-    Print("Creating zone lines from ", TimeToString(zoneTime), " to ", TimeToString(currentTime));
+    Print("Creating zone lines from ", TimeToString(startTime), " to ", TimeToString(endTime));
     Print("Top boundary: ", zone.topBoundary, " Bottom boundary: ", zone.bottomBoundary);
     
-    if(!ObjectCreate(0, topName, OBJ_TREND, 0, zoneTime, zone.topBoundary, currentTime, zone.topBoundary))
+    // Create top boundary line
+    if(!ObjectCreate(0, topName, OBJ_TREND, 0, startTime, zone.topBoundary, endTime, zone.topBoundary))
     {
         Print("Failed to create top boundary line. Error: ", GetLastError());
-        Print("Attempted coordinates: ", TimeToString(zoneTime), " ", zone.topBoundary, " to ", 
-              TimeToString(currentTime), " ", zone.topBoundary);
         return;
     }
     
-    if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, zoneTime, zone.bottomBoundary, currentTime, zone.bottomBoundary))
+    // Create bottom boundary line
+    if(!ObjectCreate(0, bottomName, OBJ_TREND, 0, startTime, zone.bottomBoundary, endTime, zone.bottomBoundary))
     {
         Print("Failed to create bottom boundary line. Error: ", GetLastError());
-        Print("Attempted coordinates: ", TimeToString(zoneTime), " ", zone.bottomBoundary, " to ", 
-              TimeToString(currentTime), " ", zone.bottomBoundary);
-        ObjectDelete(0, topName);  // Clean up top line if bottom line fails
+        ObjectDelete(0, topName);
         return;
     }
     
-    // Set common properties for both lines
-    color zoneColor = zone.isResistance ? RESISTANCE_ZONE_COLOR : SUPPORT_ZONE_COLOR;
-    
     // Set properties for top line
-    ObjectSetInteger(0, topName, OBJPROP_COLOR, zoneColor);
-    ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_SOLID);
+    ObjectSetInteger(0, topName, OBJPROP_COLOR, lineColor);
+    ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_DOT);
     ObjectSetInteger(0, topName, OBJPROP_WIDTH, 1);
-    ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
-    ObjectSetInteger(0, topName, OBJPROP_HIDDEN, true);
     ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
+    ObjectSetInteger(0, topName, OBJPROP_BACK, false);
+    ObjectSetInteger(0, topName, OBJPROP_SELECTABLE, false);
     
     // Set properties for bottom line
-    ObjectSetInteger(0, bottomName, OBJPROP_COLOR, zoneColor);
-    ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_SOLID);
+    ObjectSetInteger(0, bottomName, OBJPROP_COLOR, lineColor);
+    ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_DOT);
     ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 1);
-    ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
-    ObjectSetInteger(0, bottomName, OBJPROP_HIDDEN, true);
     ObjectSetInteger(0, bottomName, OBJPROP_RAY_RIGHT, true);
+    ObjectSetInteger(0, bottomName, OBJPROP_BACK, false);
+    ObjectSetInteger(0, bottomName, OBJPROP_SELECTABLE, false);
+    
+    // Fill the zone
+    string fillName = StringFormat("SRZone_%d_Fill", zone.chartObjectID_Top);
+    ObjectCreate(0, fillName, OBJ_RECTANGLE, 0, startTime, zone.topBoundary, endTime, zone.bottomBoundary);
+    ObjectSetInteger(0, fillName, OBJPROP_COLOR, lineColor);
+    ObjectSetInteger(0, fillName, OBJPROP_BACK, true);
+    ObjectSetInteger(0, fillName, OBJPROP_FILL, true);
+    ObjectSetInteger(0, fillName, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, fillName, OBJPROP_HIDDEN, true);
+    
+    ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+

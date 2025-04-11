@@ -58,7 +58,18 @@ double trendAdxValues[];
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("OnInit: Starting initialization...");
+    Print("OnInit: Starting initialization...");
+    
+    // Request sufficient historical data first
+    MqlRates rates[];
+    ArraySetAsSeries(rates, true);
+    int copied = CopyRates(_Symbol, PERIOD_CURRENT, 0, 100, rates);  // Request 100 bars
+    
+    if(copied < 20)
+    {
+        Print("OnInit: Failed to get enough historical data. Bars copied: ", copied);
+        return INIT_FAILED;
+    }
    
    // Check if automated trading is allowed
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
