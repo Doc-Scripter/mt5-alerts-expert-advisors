@@ -70,29 +70,13 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double e
         PrintFormat("Candle[%d]: Time=%s, Open=%.5f, High=%.5f, Low=%.5f, Close=%.5f",
                     i, TimeToString(rates[i].time), rates[i].open, rates[i].high, rates[i].low, rates[i].close);
     }
-    
-    // Validate candle range
-    double candleRange = MathAbs(rates[0].high - rates[0].low);
-    double minRange = _Point * MIN_CANDLE_SIZE_MULTIPLIER;
-    
-    Print("Candle validation - Range:", candleRange, 
-          " Min Required:", minRange,
-          " High:", rates[0].high,
-          " Low:", rates[0].low,
-          " Open:", rates[0].open,
-          " Close:", rates[0].close);
-    
-    if (candleRange < minRange)
-    {
-        Print("UpdateAndDrawValidSRZones: Candle range too small (", candleRange, " < ", minRange, "), but continuing for debugging");
-    }
 
     // Process broken zones
     Print("Checking for broken zones...");
     CheckAndRemoveBrokenZones(rates, emaValue);
 
-    // Draw S/R zones for debugging
-    DrawDebugSRZones(rates, sensitivityPips, emaValue);
+    // Create and draw valid S/R zones
+    CreateAndDrawSRZones(rates, sensitivityPips, emaValue);
 }
 
 // New function to check for broken zones
@@ -554,4 +538,52 @@ void DrawDebugSRZones(const MqlRates &rates[], int sensitivityPips, double emaVa
     Print("Debug: Creating resistance zone - Bottom=", debugResistanceZone.bottomBoundary, 
           " Top=", debugResistanceZone.topBoundary);
     DrawZoneLines(debugResistanceZone, RESISTANCE_ZONE_COLOR);
+}
+
+// New function to create and draw S/R zones
+void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double emaValue)
+{
+    double sensitivity = sensitivityPips * _Point;
+
+    // Create a support zone if the current candle is valid
+    if (rates[0].close < emaValue)
+    {
+        double supportPrice = rates[0].low;
+        SRZone supportZone;
+        supportZone.bottomBoundary = supportPrice;
+        supportZone.topBoundary = MathMax(rates[0].open, rates[0].close);
+        supportZone.definingClose = rates[0].close;
+        supportZone.isResistance = false;
+        supportZone.shift = 0;
+        supportZone.chartObjectID_Top = TimeCurrent();
+        supportZone.chartObjectID_Bottom = TimeCurrent() + 1;
+
+        if (AddZoneIfValid(supportZone, g_activeSupportZones, sensitivity, emaValue))
+        {
+            Print("Creating support zone - Bottom=", supportZone.bottomBoundary, 
+                  " Top=", supportZone.topBoundary);
+            DrawZoneLines(supportZone, SUPPORT_ZONE_COLOR);
+        }
+    }
+
+    // Create a resistance zone if the current candle is valid
+    if (rates[0].close > emaValue)
+    {
+        double resistancePrice = rates[0].high;
+        SRZone resistanceZone;
+        resistanceZone.bottomBoundary = MathMin(rates[0].open, rates[0].close);
+        resistanceZone.topBoundary = resistancePrice;
+        resistanceZone.definingClose = rates[0].close;
+        resistanceZone.isResistance = true;
+        resistanceZone.shift = 0;
+        resistanceZone.chartObjectID_Top = TimeCurrent();
+        resistanceZone.chartObjectID_Bottom = TimeCurrent() + 1;
+
+        if (AddZoneIfValid(resistanceZone, g_activeResistanceZones, sensitivity, emaValue))
+        {
+            Print("Creating resistance zone - Bottom=", resistanceZone.bottomBoundary, 
+                  " Top=", resistanceZone.topBoundary);
+            DrawZoneLines(resistanceZone, RESISTANCE_ZONE_COLOR);
+        }
+    }
 }
