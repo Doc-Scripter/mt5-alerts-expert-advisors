@@ -191,11 +191,11 @@ void OnTick()
    if(currentBars == barCount) return;
    barCount = currentBars;
    
-   // Update indicators
+   // Update indicators and get current EMA value
    if(!UpdateIndicators()) return;
-   
-   // Update S/R zones with input parameters
    double currentEMA = g_ema.values[0];
+   
+   // Update S/R zones with current EMA value
    UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips, currentEMA);
    
    // Check strategy conditions
