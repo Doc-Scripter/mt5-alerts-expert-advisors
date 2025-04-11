@@ -127,7 +127,7 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double e
     
     // Validate zones and draw them
     CountAndValidateZoneTouches(rates, sensitivity, lookbackPeriod);
-    DrawAndValidateZones(rates, sensitivity);
+    DrawAndValidateZones(rates, sensitivity, emaValue);
     
     Print("UpdateAndDrawValidSRZones: Final zones - Resistance: ", ArraySize(g_activeResistanceZones),
           ", Support: ", ArraySize(g_activeSupportZones));
@@ -236,7 +236,7 @@ void DrawZoneLines(const SRZone &zone, const color lineColor)
 //+------------------------------------------------------------------+
 //| Draw zones and validate touches                                  |
 //+------------------------------------------------------------------+
-void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
+void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double emaValue)
 {
    double currentPrice = rates[0].close;
    
@@ -244,7 +244,11 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
    for(int i = 0; i < ArraySize(g_activeResistanceZones); i++)
    {
       // Draw zone lines
-      DrawZoneLines(g_activeResistanceZones[i], clrRed);
+      // Validate against current EMA before drawing
+      bool isValid = g_activeResistanceZones[i].bottomBoundary > emaValue && 
+                   g_activeResistanceZones[i].topBoundary > emaValue;
+      color zoneColor = isValid ? clrRed : clrGray;
+      DrawZoneLines(g_activeResistanceZones[i], zoneColor);
       
       // Count touches
       g_activeResistanceZones[i].touchCount = CountTouches(rates, g_activeResistanceZones[i], sensitivity, ZONE_LOOKBACK);
@@ -264,7 +268,11 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
    for(int i = 0; i < ArraySize(g_activeSupportZones); i++)
    {
       // Draw zone lines
-      DrawZoneLines(g_activeSupportZones[i], clrGreen);
+      // Validate against current EMA before drawing
+      bool isValid = g_activeSupportZones[i].topBoundary < emaValue && 
+                   g_activeSupportZones[i].bottomBoundary < emaValue;
+      color zoneColor = isValid ? clrGreen : clrGray;
+      DrawZoneLines(g_activeSupportZones[i], zoneColor);
       
       // Count touches
       g_activeSupportZones[i].touchCount = CountTouches(rates, g_activeSupportZones[i], sensitivity, ZONE_LOOKBACK);
@@ -287,12 +295,14 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
 bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity, double emaValue)
 {
     // Validate EMA position
-    bool isValidEMA = newZone.isResistance ? 
-        (newZone.bottomBoundary > emaValue) : 
-        (newZone.topBoundary < emaValue);
+    bool isValidEMA = newZone.isResistance 
+        ? (newZone.bottomBoundary > emaValue && newZone.topBoundary > emaValue)
+        : (newZone.topBoundary < emaValue && newZone.bottomBoundary < emaValue);
         
     if(!isValidEMA) {
-        Print("Discarding zone - Invalid EMA position");
+        PrintFormat("Discarding %s zone - Boundaries [%.5f-%.5f] vs EMA %.5f",
+                   newZone.isResistance ? "resistance" : "support",
+                   newZone.bottomBoundary, newZone.topBoundary, emaValue);
         return false;
     }
     
