@@ -295,9 +295,14 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
 bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity, double emaValue)
 {
     // Validate EMA position
+    // Validate using the defining candle's open/close
+    MqlRates rates[];
+    ArraySetAsSeries(rates, true);
+    CopyRates(_Symbol, PERIOD_CURRENT, newZone.shift, 1, rates);
+    
     bool isValidEMA = newZone.isResistance 
-        ? (newZone.bottomBoundary > emaValue && newZone.topBoundary > emaValue)
-        : (newZone.topBoundary < emaValue && newZone.bottomBoundary < emaValue);
+        ? (rates[0].open > emaValue && rates[0].close > emaValue)
+        : (rates[0].open < emaValue && rates[0].close < emaValue);
         
     if(!isValidEMA) {
         PrintFormat("Discarding %s zone - Boundaries [%.5f-%.5f] vs EMA %.5f",

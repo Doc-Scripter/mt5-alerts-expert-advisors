@@ -143,10 +143,10 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
    
    if(useTrendFilter)
    {
+      // Use EMA value at pattern formation time
       double maPrior = g_ema.values[priorIdx];
-      double midOCPrior = (open2 + close2) / 2.0;
-      trendOkBull = midOCPrior < maPrior;
-      trendOkBear = midOCPrior > maPrior;
+      trendOkBull = close1 > maPrior;
+      trendOkBear = close1 < maPrior;
    }
    
    if(bullish)

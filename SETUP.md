@@ -14,7 +14,7 @@ For proper compilation, your files should be organized as follows:
 │   │   ├── EMA_Engulfing_Trade.mqh  (Trade functions)
 │   │   └── EMA_Engulfing_Logger.mqh  (Logging functions)
 ```
-
+we could use a simple method whereby ema crossovers trigger a different value to drwaing the s/r ,lets say if below each level break will draw new support zones and if complete ema crossover then the mode changes to drawing resistance level lines
 ## Installation Instructions
 
 1. Locate your MT5 data folder:
