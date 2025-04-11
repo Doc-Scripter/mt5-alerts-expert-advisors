@@ -346,20 +346,31 @@ void DeleteAllSRZoneLines()
 //+------------------------------------------------------------------+
 bool HasActiveZoneNearby(double price, double sensitivity)
 {
+    PrintFormat("HasActiveZoneNearby: Checking price %.5f with sensitivity %.5f", price, sensitivity);
+
     // Check resistance zones
-    for(int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+    for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
     {
-        if(MathAbs(price - g_activeResistanceZones[i].definingClose) < sensitivity)
+        double zoneClose = g_activeResistanceZones[i].definingClose;
+        if (MathAbs(price - zoneClose) <= sensitivity)
+        {
+            PrintFormat("HasActiveZoneNearby: Price %.5f is near resistance zone at %.5f", price, zoneClose);
             return true;
+        }
     }
 
     // Check support zones
-    for(int i = 0; i < ArraySize(g_activeSupportZones); i++)
+    for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
     {
-        if(MathAbs(price - g_activeSupportZones[i].definingClose) < sensitivity)
+        double zoneClose = g_activeSupportZones[i].definingClose;
+        if (MathAbs(price - zoneClose) <= sensitivity)
+        {
+            PrintFormat("HasActiveZoneNearby: Price %.5f is near support zone at %.5f", price, zoneClose);
             return true;
+        }
     }
 
+    Print("HasActiveZoneNearby: No active zone found near the price.");
     return false;
 }
 //+------------------------------------------------------------------+
@@ -503,7 +514,7 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     // Process resistance zones
     for (int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        SRZone &zone = g_activeResistanceZones[i];
+        SRZone zone = g_activeResistanceZones[i];
 
         // Check if the zone is broken
         if (IsZoneBroken(zone, rates, 0))
@@ -525,7 +536,7 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     // Process support zones
     for (int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
     {
-        SRZone &zone = g_activeSupportZones[i];
+        SRZone zone = g_activeSupportZones[i];
 
         // Check if the zone is broken
         if (IsZoneBroken(zone, rates, 0))

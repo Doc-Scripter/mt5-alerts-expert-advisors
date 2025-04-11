@@ -186,20 +186,23 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Check for new bar
-   int currentBars = Bars(_Symbol, PERIOD_CURRENT);
-   if(currentBars == barCount) return;
-   barCount = currentBars;
-   
-   // Update indicators and get current EMA value
-   if(!UpdateIndicators()) return;
-   double currentEMA = g_ema.values[0];
-   
-   // Update S/R zones with current EMA value
-   UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips, currentEMA);
-   
-   // Check strategy conditions
-   CheckStrategy();
+    int currentBars = Bars(_Symbol, PERIOD_CURRENT);
+    if (currentBars == barCount) return;
+    barCount = currentBars;
+
+    if (!UpdateIndicators()) return;
+    double currentEMA = g_ema.values[0];
+
+    UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips, currentEMA);
+
+    MqlRates rates[];
+    ArraySetAsSeries(rates, true);
+    int available = CopyRates(_Symbol, PERIOD_CURRENT, 0, SR_Lookback, rates);
+
+    if (available > 0)
+    {
+        CheckForEngulfingAndExecuteTrade(rates, SR_Sensitivity_Pips * _Point);
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -303,7 +306,7 @@ void CheckStrategy()
          double stopLoss = nearestSupport.bottomBoundary;
          double takeProfit = closePrice + ((closePrice - stopLoss) * 1.5);
          
-         ExecuteTrade(true, stopLoss, takeProfit);
+         ExecuteTrade(true, closePrice);
          return;
       }
    }
@@ -339,7 +342,7 @@ void CheckStrategy()
          double stopLoss = nearestResistance.topBoundary;
          double takeProfit = closePrice - ((stopLoss - closePrice) * 1.5);
          
-         ExecuteTrade(false, stopLoss, takeProfit);
+         ExecuteTrade(false, closePrice);
       }
    }
 }
@@ -347,36 +350,43 @@ void CheckStrategy()
 //+------------------------------------------------------------------+
 //| Execute trade                                                     |
 //+------------------------------------------------------------------+
-void ExecuteTrade(bool isBuy, double stopLoss, double takeProfit)
+void ExecuteTrade(bool isBuy, double price)
 {
-   double lotSize = GetLotSize();
-   if(lotSize <= 0) return;
-   
-   MqlTradeRequest request = {};
-   MqlTradeResult result = {};
-   
-   request.action = TRADE_ACTION_DEAL;
-   request.symbol = _Symbol;
-   request.volume = lotSize;
-   request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   request.price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   request.sl = stopLoss;
-   request.tp = takeProfit;
-   request.deviation = 10;
-   request.magic = MAGIC_NUMBER;
-   request.comment = "Strategy 2 " + (isBuy ? "Buy" : "Sell");
-   
-   if(!OrderSend(request, result))
-   {
-      Print("OrderSend failed with error: ", GetLastError());
-      return;
-   }
-   
-   if(result.retcode == TRADE_RETCODE_DONE)
-   {
-      g_lastTradeTime = TimeCurrent();
-      Print("Trade executed successfully. Ticket: ", result.order);
-   }
+    double lotSize = 0.1;  // Fixed lot size for testing
+    double stopLoss = isBuy ? price - 50 * _Point : price + 50 * _Point;
+    double takeProfit = isBuy ? price + 100 * _Point : price - 100 * _Point;
+
+    MqlTradeRequest request = {};
+    MqlTradeResult result = {};
+
+    request.action = TRADE_ACTION_DEAL;
+    request.symbol = _Symbol;
+    request.volume = lotSize;
+    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+    request.price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    request.sl = stopLoss;
+    request.tp = takeProfit;
+    request.deviation = 10;
+    request.magic = MAGIC_NUMBER;
+    request.comment = "Engulfing Trade";
+
+    PrintFormat("ExecuteTrade: Sending %s order. Price=%.5f, SL=%.5f, TP=%.5f", 
+                isBuy ? "Buy" : "Sell", request.price, stopLoss, takeProfit);
+
+    if (!OrderSend(request, result))
+    {
+        Print("ExecuteTrade: OrderSend failed. Error: ", GetLastError());
+        return;
+    }
+
+    if (result.retcode == TRADE_RETCODE_DONE)
+    {
+        Print("ExecuteTrade: Trade executed successfully. Ticket: ", result.order);
+    }
+    else
+    {
+        Print("ExecuteTrade: Trade failed. Retcode: ", result.retcode);
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -530,3 +540,48 @@ void OnTimer()
       }
    }
 }
+
+//+------------------------------------------------------------------+
+//| Check for engulfing pattern and execute trade                    |
+//+------------------------------------------------------------------+
+void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivity)
+{
+    bool isBullish = false;
+    bool isEngulfing = false;
+
+    // Check for bullish engulfing
+    if (IsEngulfing(SHIFT_TO_CHECK, true, Use_Trend_Filter))
+    {
+        isBullish = true;
+        isEngulfing = true;
+        Print("CheckForEngulfingAndExecuteTrade: Bullish engulfing detected.");
+    }
+    // Check for bearish engulfing
+    else if (IsEngulfing(SHIFT_TO_CHECK, false, Use_Trend_Filter))
+    {
+        isBullish = false;
+        isEngulfing = true;
+        Print("CheckForEngulfingAndExecuteTrade: Bearish engulfing detected.");
+    }
+
+    if (!isEngulfing)
+    {
+        Print("CheckForEngulfingAndExecuteTrade: No engulfing pattern detected.");
+        return;
+    }
+
+    double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
+
+    // Check if the engulfing candle is near an S/R zone
+    if (HasActiveZoneNearby(closePrice, sensitivity))
+    {
+        Print("CheckForEngulfingAndExecuteTrade: Engulfing candle detected near an S/R zone. Executing trade...");
+        ExecuteTrade(isBullish, closePrice);
+    }
+    else
+    {
+        Print("CheckForEngulfingAndExecuteTrade: Engulfing candle detected but not near any S/R zone.");
+    }
+}
+
+
