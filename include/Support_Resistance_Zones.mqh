@@ -43,7 +43,7 @@ DrawnZone g_drawnZones[];
 // Copy all functions exactly as they are but remove their definitions from the EA
 
 // Modify UpdateAndDrawValidSRZones to only draw new zones
-void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
+void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double emaValue)
 {
     Print("UpdateAndDrawValidSRZones: Starting...");
     
@@ -91,7 +91,7 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
                 newZone.chartObjectID_Top = (long)TimeCurrent() + i;
                 newZone.chartObjectID_Bottom = (long)TimeCurrent() + i + 1;
                 
-                if(AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity))
+                if(AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity, emaValue))
                 {
                     resistanceCount++;
                     Print("Created resistance zone at price ", newZone.topBoundary);
@@ -114,7 +114,7 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
                 newZone.chartObjectID_Top = (long)TimeCurrent() + i;
                 newZone.chartObjectID_Bottom = (long)TimeCurrent() + i + 1;
                 
-                if(AddZoneIfValid(newZone, g_activeSupportZones, sensitivity))
+                if(AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue))
                 {
                     supportCount++;
                     Print("Created support zone at price ", newZone.bottomBoundary);
@@ -134,12 +134,12 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips)
 }
 
 // New function to check for broken zones
-void CheckAndRemoveBrokenZones(const MqlRates &rates[])
+void CheckAndRemoveBrokenZones(const MqlRates &rates[], double emaValue)
 {
     // Check resistance zones
     for(int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        if(IsZoneBroken(g_activeResistanceZones[i], rates, 0))
+        if(IsZoneBroken(g_activeResistanceZones[i], rates, 0, emaValue))
         {
             // Remove the zone's visual elements
             DeleteZoneObjects(g_activeResistanceZones[i]);
@@ -151,7 +151,7 @@ void CheckAndRemoveBrokenZones(const MqlRates &rates[])
     // Check support zones
     for(int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
     {
-        if(IsZoneBroken(g_activeSupportZones[i], rates, 0))
+        if(IsZoneBroken(g_activeSupportZones[i], rates, 0, emaValue))
         {
             // Remove the zone's visual elements
             DeleteZoneObjects(g_activeSupportZones[i]);
@@ -282,10 +282,20 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity)
 }
 
 //+------------------------------------------------------------------+
-//| Add zone if it's valid (not too close to existing zones)         |
+//| Add zone if it's valid (EMA position and proximity checks)       |
 //+------------------------------------------------------------------+
-bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity)
+bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity, double emaValue)
 {
+    // Validate EMA position
+    bool isValidEMA = newZone.isResistance ? 
+        (newZone.bottomBoundary > emaValue) : 
+        (newZone.topBoundary < emaValue);
+        
+    if(!isValidEMA) {
+        Print("Discarding zone - Invalid EMA position");
+        return false;
+    }
+    
     // Check if zone already exists
     for(int j = 0; j < ArraySize(existingZones); j++)
     {
@@ -305,7 +315,7 @@ bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity
 }
 
 // Update IsZoneBroken to be more precise
-bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
+bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift, double emaValue)
 {
     if(shift >= ArraySize(rates)) return false;
     
@@ -315,8 +325,8 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     
     if(zone.isResistance)
     {
-        // Resistance broken by a strong bullish move
-        if(isBullish && candleClose > zone.topBoundary)
+        // Resistance broken when both open/close above zone
+        if(candleOpen > zone.topBoundary && candleClose > zone.topBoundary)
         {
             Print("Resistance zone broken by bullish candle at ", TimeToString(rates[shift].time));
             // Create new resistance zone from breaking candle
@@ -330,14 +340,14 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
             newZone.chartObjectID_Top = TimeCurrent() + shift;
             newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
             
-            AddZoneIfValid(newZone, g_activeResistanceZones, _Point * 10);
+            AddZoneIfValid(newZone, g_activeResistanceZones, _Point * 10, emaValue);
             return true;
         }
     }
     else
     {
-        // Support broken by a strong bearish move
-        if(!isBullish && candleClose < zone.bottomBoundary)
+        // Support broken when both open/close below zone
+        if(candleOpen < zone.bottomBoundary && candleClose < zone.bottomBoundary)
         {
             Print("Support zone broken by bearish candle at ", TimeToString(rates[shift].time));
             // Create new support zone from breaking candle
@@ -351,7 +361,7 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
             newZone.chartObjectID_Top = TimeCurrent() + shift;
             newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
             
-            AddZoneIfValid(newZone, g_activeSupportZones, _Point * 10);
+            AddZoneIfValid(newZone, g_activeSupportZones, _Point * 10, emaValue);
             return true;
         }
     }
@@ -451,7 +461,7 @@ bool IsNewValidZone(const MqlRates &rates[], int shift, double emaValue, bool is
 //+------------------------------------------------------------------+
 //| Create and draw a new zone                                       |
 //+------------------------------------------------------------------+
-void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance, double sensitivity)
+void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance, double sensitivity, double emaValue)
 {
     SRZone newZone;
     newZone.definingClose = rates[shift].close;
@@ -466,7 +476,7 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
         newZone.chartObjectID_Top = TimeCurrent() + shift;
         newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
         
-        AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity);
+        AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity, emaValue);
     }
     else
     {
@@ -475,7 +485,7 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
         newZone.chartObjectID_Top = TimeCurrent() + shift;
         newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
         
-        AddZoneIfValid(newZone, g_activeSupportZones, sensitivity);
+        AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue);
     }
     
     DrawZoneLines(newZone, isResistance ? RESISTANCE_ZONE_COLOR : SUPPORT_ZONE_COLOR);

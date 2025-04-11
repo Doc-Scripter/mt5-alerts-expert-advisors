@@ -181,7 +181,8 @@ void OnTick()
    if(!UpdateIndicators()) return;
    
    // Update S/R zones with input parameters
-   UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips);
+   double currentEMA = g_ema.values[0];
+   UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips, currentEMA);
    
    // Check strategy conditions
    CheckStrategy();
