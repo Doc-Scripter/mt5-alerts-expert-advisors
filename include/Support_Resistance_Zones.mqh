@@ -132,58 +132,44 @@ void DrawZoneLines(const SRZone &zone, const color lineColor)
     
     string topName = StringFormat("SRZone_%d_Top", zone.chartObjectID_Top);
     string bottomName = StringFormat("SRZone_%d_Bottom", zone.chartObjectID_Bottom);
-    string fillName = StringFormat("SRZone_%d_Fill", zone.chartObjectID_Top);
     
     // Delete existing objects
     ObjectDelete(0, topName);
     ObjectDelete(0, bottomName);
-    ObjectDelete(0, fillName);
     
     datetime startTime = iTime(_Symbol, PERIOD_CURRENT, zone.shift);
     datetime endTime = TimeCurrent() + PeriodSeconds(PERIOD_CURRENT) * 100;
     
-    // Create zone lines with fill
-    if (!ObjectCreate(0, fillName, OBJ_RECTANGLE, 0, startTime, zone.topBoundary, 
-                      endTime, zone.bottomBoundary))
-    {
-        Print("Failed to create zone fill. Error:", GetLastError());
-        return;
-    }
-    
-    // Set fill properties
-    ObjectSetInteger(0, fillName, OBJPROP_COLOR, lineColor);
-    ObjectSetInteger(0, fillName, OBJPROP_FILL, true);
-    ObjectSetInteger(0, fillName, OBJPROP_BACK, true);
-    ObjectSetInteger(0, fillName, OBJPROP_WIDTH, 1);
-    ObjectSetInteger(0, fillName, OBJPROP_SELECTABLE, false);
-    
-    // Create border lines
+    // Create top boundary line
     if (!ObjectCreate(0, topName, OBJ_TREND, 0, startTime, zone.topBoundary, 
                       endTime, zone.topBoundary))
     {
-        Print("Failed to create top line. Error:", GetLastError());
+        Print("Failed to create top boundary line. Error:", GetLastError());
         return;
     }
     
-    if (!ObjectCreate(0, bottomName, OBJ_TREND, 0, startTime, zone.bottomBoundary, 
-                      endTime, zone.bottomBoundary))
-    {
-        Print("Failed to create bottom line. Error:", GetLastError());
-        return;
-    }
-    
-    // Set line properties
+    // Set top boundary line properties
     ObjectSetInteger(0, topName, OBJPROP_COLOR, lineColor);
     ObjectSetInteger(0, topName, OBJPROP_STYLE, STYLE_SOLID);
     ObjectSetInteger(0, topName, OBJPROP_WIDTH, 2);
     ObjectSetInteger(0, topName, OBJPROP_RAY_RIGHT, true);
     
+    // Create bottom boundary line
+    if (!ObjectCreate(0, bottomName, OBJ_TREND, 0, startTime, zone.bottomBoundary, 
+                      endTime, zone.bottomBoundary))
+    {
+        Print("Failed to create bottom boundary line. Error:", GetLastError());
+        ObjectDelete(0, topName); // Clean up if bottom line creation fails
+        return;
+    }
+    
+    // Set bottom boundary line properties
     ObjectSetInteger(0, bottomName, OBJPROP_COLOR, lineColor);
     ObjectSetInteger(0, bottomName, OBJPROP_STYLE, STYLE_SOLID);
     ObjectSetInteger(0, bottomName, OBJPROP_WIDTH, 2);
     ObjectSetInteger(0, bottomName, OBJPROP_RAY_RIGHT, true);
     
-    Print("Successfully created zone lines and fill");
+    Print("Successfully created both boundary lines - Top:", zone.topBoundary, " Bottom:", zone.bottomBoundary);
     ChartRedraw(0);
 }
 
@@ -289,11 +275,12 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     if (shift >= ArraySize(rates)) return false;
 
     double candleOpen = rates[shift].open;
+    double candleClose = rates[shift].close;
 
     if (zone.isResistance)
     {
-        // Resistance is broken if the open is above the bottom boundary
-        if (candleOpen > zone.bottomBoundary)
+        // Resistance is broken if a bullish open or bearish close forms above the bottom boundary
+        if (candleOpen > zone.bottomBoundary || candleClose > zone.bottomBoundary)
         {
             Print("Resistance zone broken at ", TimeToString(rates[shift].time));
             return true;
@@ -301,8 +288,8 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     }
     else
     {
-        // Support is broken if the open is below the top boundary
-        if (candleOpen < zone.topBoundary)
+        // Support is broken if a bearish open or bullish close forms below the top boundary
+        if (candleOpen < zone.topBoundary || candleClose < zone.topBoundary)
         {
             Print("Support zone broken at ", TimeToString(rates[shift].time));
             return true;
@@ -534,24 +521,30 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     double sensitivity = sensitivityPips * _Point;
 
     // Process resistance zones
-    for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+    for (int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        if (rates[0].close > g_activeResistanceZones[i].topBoundary)
+        // Invalidate the resistance zone if a bullish open or bearish close forms above the bottom boundary
+        if (rates[0].open > g_activeResistanceZones[i].bottomBoundary || rates[0].close > g_activeResistanceZones[i].bottomBoundary)
         {
-            // Adjust the top boundary to the new higher close
-            g_activeResistanceZones[i].topBoundary = rates[0].close;
-            Print("Adjusted resistance zone top boundary to ", g_activeResistanceZones[i].topBoundary);
+            Print("Invalidating resistance zone at ", g_activeResistanceZones[i].bottomBoundary, 
+                  " due to candle open/close above the bottom boundary");
+            DeleteZoneObjects(g_activeResistanceZones[i]);
+            ArrayRemove(g_activeResistanceZones, i, 1);
+            continue;
         }
     }
 
     // Process support zones
-    for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
+    for (int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
     {
-        if (rates[0].close < g_activeSupportZones[i].bottomBoundary)
+        // Invalidate the support zone if a bearish open or bullish close forms below the top boundary
+        if (rates[0].open < g_activeSupportZones[i].topBoundary || rates[0].close < g_activeSupportZones[i].topBoundary)
         {
-            // Adjust the bottom boundary to the new lower close
-            g_activeSupportZones[i].bottomBoundary = rates[0].close;
-            Print("Adjusted support zone bottom boundary to ", g_activeSupportZones[i].bottomBoundary);
+            Print("Invalidating support zone at ", g_activeSupportZones[i].topBoundary, 
+                  " due to candle open/close below the top boundary");
+            DeleteZoneObjects(g_activeSupportZones[i]);
+            ArrayRemove(g_activeSupportZones, i, 1);
+            continue;
         }
     }
 
@@ -559,8 +552,8 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     if (rates[0].close < emaValue)
     {
         SRZone supportZone;
-        supportZone.bottomBoundary = MathMin(rates[0].open, rates[0].close);
-        supportZone.topBoundary = rates[0].high;
+        supportZone.bottomBoundary = rates[0].low;
+        supportZone.topBoundary = MathMax(rates[0].open, rates[0].close);
         supportZone.definingClose = rates[0].close;
         supportZone.isResistance = false;
         supportZone.shift = 0;
