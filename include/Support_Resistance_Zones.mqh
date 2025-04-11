@@ -279,8 +279,8 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 
     if (zone.isResistance)
     {
-        // Resistance is broken if a bullish open or bearish close forms above the bottom boundary
-        if (candleOpen > zone.bottomBoundary || candleClose > zone.bottomBoundary)
+        // Resistance is broken if a bullish open and bearish close form above the top boundary
+        if (candleOpen > zone.topBoundary && candleClose < zone.topBoundary)
         {
             Print("Resistance zone broken at ", TimeToString(rates[shift].time));
             return true;
@@ -288,8 +288,8 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     }
     else
     {
-        // Support is broken if a bearish open or bullish close forms below the top boundary
-        if (candleOpen < zone.topBoundary || candleClose < zone.topBoundary)
+        // Support is broken if a bearish open and bullish close form below the bottom boundary
+        if (candleOpen < zone.bottomBoundary && candleClose > zone.bottomBoundary)
         {
             Print("Support zone broken at ", TimeToString(rates[shift].time));
             return true;
@@ -523,32 +523,48 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     // Process resistance zones
     for (int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        // Invalidate the resistance zone if a bullish open or bearish close forms above the bottom boundary
-        if (rates[0].open > g_activeResistanceZones[i].bottomBoundary || rates[0].close > g_activeResistanceZones[i].bottomBoundary)
+        SRZone zone = g_activeResistanceZones[i];  // Access the element directly
+
+        // Check if the zone is broken
+        if (IsZoneBroken(zone, rates, 0))
         {
-            Print("Invalidating resistance zone at ", g_activeResistanceZones[i].bottomBoundary, 
-                  " due to candle open/close above the bottom boundary");
-            DeleteZoneObjects(g_activeResistanceZones[i]);
+            Print("Invalidating resistance zone at ", zone.topBoundary, " due to break condition.");
+            DeleteZoneObjects(zone);
             ArrayRemove(g_activeResistanceZones, i, 1);
             continue;
+        }
+
+        // Adjust the bottom boundary upwards if the top boundary is not broken
+        if (rates[0].low > zone.bottomBoundary && rates[0].low < zone.topBoundary)
+        {
+            zone.bottomBoundary = rates[0].low;
+            Print("Adjusting resistance zone bottom boundary to ", zone.bottomBoundary);
         }
     }
 
     // Process support zones
     for (int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
     {
-        // Invalidate the support zone if a bearish open or bullish close forms below the top boundary
-        if (rates[0].open < g_activeSupportZones[i].topBoundary || rates[0].close < g_activeSupportZones[i].topBoundary)
+        SRZone zone = g_activeSupportZones[i];  // Access the element directly
+
+        // Check if the zone is broken
+        if (IsZoneBroken(zone, rates, 0))
         {
-            Print("Invalidating support zone at ", g_activeSupportZones[i].topBoundary, 
-                  " due to candle open/close below the top boundary");
-            DeleteZoneObjects(g_activeSupportZones[i]);
+            Print("Invalidating support zone at ", zone.bottomBoundary, " due to break condition.");
+            DeleteZoneObjects(zone);
             ArrayRemove(g_activeSupportZones, i, 1);
             continue;
         }
+
+        // Adjust the top boundary downwards if the bottom boundary is not broken
+        if (rates[0].high < zone.topBoundary && rates[0].high > zone.bottomBoundary)
+        {
+            zone.topBoundary = rates[0].high;
+            Print("Adjusting support zone top boundary to ", zone.topBoundary);
+        }
     }
 
-    // Create a new support zone if the current candle is valid
+    // Create new zones if the current candle is valid
     if (rates[0].close < emaValue)
     {
         SRZone supportZone;
@@ -568,7 +584,6 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
         }
     }
 
-    // Create a new resistance zone if the current candle is valid
     if (rates[0].close > emaValue)
     {
         SRZone resistanceZone;
