@@ -39,98 +39,89 @@ int g_nearestResistanceZoneIndex = -1;
 // Global array to track drawn zones
 DrawnZone g_drawnZones[];
 
+// Add after the existing global variables
+bool g_isAboveEMA = false;  // Tracks if price is above EMA
+
 // Function implementations from Strategy2_SR_Engulfing_EA.mq5
 // Copy all functions exactly as they are but remove their definitions from the EA
 
-// Modify UpdateAndDrawValidSRZones to only draw new zones
+// Replace the existing UpdateAndDrawValidSRZones function with this implementation
 void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double emaValue)
 {
-    Print("UpdateAndDrawValidSRZones: Starting...");
-    
-    // Clear all existing zones first
-    DeleteAllSRZoneLines();
-    ArrayFree(g_activeSupportZones);
-    ArrayFree(g_activeResistanceZones);
-    g_nearestSupportZoneIndex = -1;
-    g_nearestResistanceZoneIndex = -1;
-    
-    // Get price data
     MqlRates rates[];
     ArraySetAsSeries(rates, true);
-    int copied = CopyRates(_Symbol, PERIOD_CURRENT, 0, ZONE_LOOKBACK, rates);
-    if(copied < ZONE_LOOKBACK)
+    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, lookbackPeriod, rates) != lookbackPeriod)
     {
-        Print("Failed to copy rates. Error: ", GetLastError());
+        Print("Failed to copy rates data");
         return;
     }
+
+    double sensitivity = sensitivityPips * _Point;
     
-    Print("UpdateAndDrawValidSRZones: Copied ", copied, " bars");
-    
-    double sensitivity = sensitivityPips * _Point * 10;
-    
-    // Look for initial zones from most recent to oldest
-    int resistanceCount = 0;
-    int supportCount = 0;
-    
-    for(int i = 1; i < ZONE_LOOKBACK - 1; i++)
+    // Check if current candle breaks any existing zones
+    for(int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        bool isBullish = rates[i].close > rates[i].open;
-        
-        // Check for swing high (potential resistance)
-        if(isBullish && rates[i].high > rates[i+1].high && rates[i].high > rates[i-1].high)
+        // Resistance is broken if candle closes above the zone
+        if(rates[0].close > g_activeResistanceZones[i].topBoundary)
         {
-            if(!HasActiveZoneNearby(rates[i].high, sensitivity))
-            {
-                SRZone newZone;
-                newZone.definingClose = rates[i].close;
-                newZone.topBoundary = rates[i].high;
-                newZone.bottomBoundary = rates[i].high - sensitivity;
-                newZone.isResistance = true;
-                newZone.touchCount = 1;
-                newZone.shift = i;
-                newZone.chartObjectID_Top = (long)TimeCurrent() + i;
-                newZone.chartObjectID_Bottom = (long)TimeCurrent() + i + 1;
-                
-                if(AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity, emaValue))
-                {
-                    resistanceCount++;
-                    Print("Created resistance zone at price ", newZone.topBoundary);
-                }
-            }
+            DeleteZoneObjects(g_activeResistanceZones[i]);
+            ArrayRemove(g_activeResistanceZones, i, 1);
         }
-        
-        // Check for swing low (potential support)
-        if(!isBullish && rates[i].low < rates[i+1].low && rates[i].low < rates[i-1].low)
+    }
+
+    for(int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
+    {
+        // Support is broken if candle closes below the zone
+        if(rates[0].close < g_activeSupportZones[i].bottomBoundary)
         {
-            if(!HasActiveZoneNearby(rates[i].low, sensitivity))
+            DeleteZoneObjects(g_activeSupportZones[i]);
+            ArrayRemove(g_activeSupportZones, i, 1);
+        }
+    }
+
+    // Check for new zones
+    if(rates[1].close > rates[0].close) // Potential support
+    {
+        double zonePrice = rates[0].low;
+        if(!HasActiveZoneNearby(zonePrice, sensitivity))
+        {
+            SRZone newZone;
+            newZone.bottomBoundary = zonePrice;
+            newZone.topBoundary = MathMax(rates[0].open, rates[0].close);
+            newZone.definingClose = rates[0].close;
+            newZone.isResistance = false;
+            newZone.shift = 0;
+            newZone.chartObjectID_Top = TimeCurrent();
+            newZone.chartObjectID_Bottom = TimeCurrent() + 1;
+
+            if(ArrayResize(g_activeSupportZones, ArraySize(g_activeSupportZones) + 1) > 0)
             {
-                SRZone newZone;
-                newZone.definingClose = rates[i].close;
-                newZone.topBoundary = rates[i].low + sensitivity;
-                newZone.bottomBoundary = rates[i].low;
-                newZone.isResistance = false;
-                newZone.touchCount = 1;
-                newZone.shift = i;
-                newZone.chartObjectID_Top = (long)TimeCurrent() + i;
-                newZone.chartObjectID_Bottom = (long)TimeCurrent() + i + 1;
-                
-                if(AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue))
-                {
-                    supportCount++;
-                    Print("Created support zone at price ", newZone.bottomBoundary);
-                }
+                g_activeSupportZones[ArraySize(g_activeSupportZones) - 1] = newZone;
+                DrawZoneLines(newZone, SUPPORT_ZONE_COLOR);
             }
         }
     }
-    
-    Print("UpdateAndDrawValidSRZones: Found ", resistanceCount, " resistance zones and ", supportCount, " support zones");
-    
-    // Validate zones and draw them
-    CountAndValidateZoneTouches(rates, sensitivity, lookbackPeriod);
-    DrawAndValidateZones(rates, sensitivity, emaValue);
-    
-    Print("UpdateAndDrawValidSRZones: Final zones - Resistance: ", ArraySize(g_activeResistanceZones),
-          ", Support: ", ArraySize(g_activeSupportZones));
+    else if(rates[1].close < rates[0].close) // Potential resistance
+    {
+        double zonePrice = rates[0].high;
+        if(!HasActiveZoneNearby(zonePrice, sensitivity))
+        {
+            SRZone newZone;
+            newZone.bottomBoundary = MathMin(rates[0].open, rates[0].close);
+            newZone.topBoundary = zonePrice;
+            newZone.definingClose = rates[0].close;
+            newZone.isResistance = true;
+            newZone.shift = 0;
+            newZone.chartObjectID_Top = TimeCurrent();
+            newZone.chartObjectID_Bottom = TimeCurrent() + 1;
+
+            if(ArrayResize(g_activeResistanceZones, ArraySize(g_activeResistanceZones) + 1) > 0)
+            {
+                g_activeResistanceZones[ArraySize(g_activeResistanceZones) - 1] = newZone;
+                DrawZoneLines(newZone, RESISTANCE_ZONE_COLOR);
+            }
+        }
+    }
 }
 
 // New function to check for broken zones
@@ -343,19 +334,12 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift, double
         // Resistance broken when both open/close above zone
         if(candleOpen > zone.topBoundary && candleClose > zone.topBoundary)
         {
-            Print("Resistance zone broken by bullish candle at ", TimeToString(rates[shift].time));
-            // Create new resistance zone from breaking candle
-            SRZone newZone;
-            newZone.definingClose = candleClose;
-            newZone.topBoundary = rates[shift].high;
-            newZone.bottomBoundary = candleOpen;
-            newZone.isResistance = true;
-            newZone.touchCount = 1;
-            newZone.shift = shift;
-            newZone.chartObjectID_Top = TimeCurrent() + shift;
-            newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
-            
-            AddZoneIfValid(newZone, g_activeResistanceZones, _Point * 10, emaValue);
+            Print("Resistance zone broken at ", TimeToString(rates[shift].time));
+            // Only create new resistance zone if price is above EMA
+            if(g_isAboveEMA)
+            {
+                CreateAndDrawNewZone(rates, shift, true, _Point * 10, emaValue);
+            }
             return true;
         }
     }
@@ -364,19 +348,12 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift, double
         // Support broken when both open/close below zone
         if(candleOpen < zone.bottomBoundary && candleClose < zone.bottomBoundary)
         {
-            Print("Support zone broken by bearish candle at ", TimeToString(rates[shift].time));
-            // Create new support zone from breaking candle
-            SRZone newZone;
-            newZone.definingClose = candleClose;
-            newZone.topBoundary = candleOpen;
-            newZone.bottomBoundary = rates[shift].low;
-            newZone.isResistance = false;
-            newZone.touchCount = 1;
-            newZone.shift = shift;
-            newZone.chartObjectID_Top = TimeCurrent() + shift;
-            newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
-            
-            AddZoneIfValid(newZone, g_activeSupportZones, _Point * 10, emaValue);
+            Print("Support zone broken at ", TimeToString(rates[shift].time));
+            // Only create new support zone if price is below EMA
+            if(!g_isAboveEMA)
+            {
+                CreateAndDrawNewZone(rates, shift, false, _Point * 10, emaValue);
+            }
             return true;
         }
     }
@@ -544,4 +521,22 @@ void CountAndValidateZoneTouches(const MqlRates &rates[], double sensitivity, in
                   " - ", g_activeSupportZones[i].touchCount, " touches");
         }
     }
+}
+
+//+------------------------------------------------------------------+
+//| Check for EMA crossover                                           |
+//+------------------------------------------------------------------+
+bool UpdateEMACrossoverState(const MqlRates &rates[], double emaValue)
+{
+    bool previousState = g_isAboveEMA;
+    g_isAboveEMA = rates[0].close > emaValue;
+    
+    // Return true if there was a crossover
+    bool crossover = previousState != g_isAboveEMA;
+    if(crossover)
+    {
+        Print("EMA Crossover detected: Price is now ", g_isAboveEMA ? "above" : "below", " EMA");
+    }
+    
+    return crossover;
 }

@@ -64,14 +64,14 @@ int OnInit()
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
    {
       Print("OnInit: Automated trading is not allowed. Please enable it in MetaTrader 5.");
-      return(INIT_FAILED);
+      return INIT_FAILED;  // Changed from return(INIT_FAILED)
    }
    
    // Check if trading is allowed for the symbol
    if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL)
    {
       Print("Trading is not allowed for ", _Symbol);
-      return(INIT_FAILED);
+      return INIT_FAILED;  // Changed from return(INIT_FAILED)
    }
    
    // Get symbol volume constraints
@@ -82,7 +82,7 @@ int OnInit()
    if(volMin <= 0 || volMax <= 0 || volStep <= 0)
    {
       Print("Failed to get valid volume constraints for ", _Symbol);
-      return(INIT_FAILED); 
+      return INIT_FAILED;  // Changed from return(INIT_FAILED)
    }
    
    // Initialize EMA indicator
@@ -90,12 +90,15 @@ int OnInit()
    if(!InitializeEMA())
    {
       Print("OnInit: Failed to initialize EMA indicator");
-      return(INIT_FAILED);
+      return INIT_FAILED;  // Changed from return(INIT_FAILED)
    }
    
    // Initialize barCount
    barCount = Bars(_Symbol, PERIOD_CURRENT);
    Print("OnInit: Initial bar count is ", barCount);
+   
+   // Clear any existing S/R lines at startup
+   DeleteAllSRZoneLines();
    
    // Initialize trend filter indicators
    if(Use_Trend_Filter)
@@ -117,13 +120,13 @@ int OnInit()
       {
          Print("OnInit: Failed to create trend filter indicators. Handles: Fast EMA=", trendFastEmaHandle,
                ", Slow EMA=", trendSlowEmaHandle, ", ADX=", trendAdxHandle);
-         return(INIT_FAILED);
+         return INIT_FAILED;  // Changed from return(INIT_FAILED)
       }
       
       Print("OnInit: Successfully created trend filter indicators");
    }
    
-   return(INIT_SUCCEEDED);
+   return INIT_SUCCEEDED;  // Changed from return(INIT_SUCCEEDED)
 }
 
 //+------------------------------------------------------------------+
@@ -473,7 +476,6 @@ int GetTrendState()
    Print("GetTrendState: No strong trend detected, returning RANGING");
    return TREND_RANGING;
 }
-
 
 //+------------------------------------------------------------------+
 //| Timer function for breakeven management                          |
