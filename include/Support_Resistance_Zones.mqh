@@ -17,7 +17,6 @@ struct SRZone
    double bottomBoundary;
    double definingClose;
    bool isResistance;
-   int touchCount;
    long chartObjectID_Top;
    long chartObjectID_Bottom;
    int shift;
@@ -207,9 +206,6 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
         color zoneColor = isValid ? clrRed : clrGray;
         DrawZoneLines(g_activeResistanceZones[i], zoneColor);
 
-        // Count touches
-        g_activeResistanceZones[i].touchCount = CountTouches(rates, g_activeResistanceZones[i], sensitivity, ZONE_LOOKBACK);
-
         // Update nearest resistance
         if(g_activeResistanceZones[i].bottomBoundary > currentPrice)
         {
@@ -230,9 +226,6 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
                        g_activeSupportZones[i].bottomBoundary < emaValue;
         color zoneColor = isValid ? clrGreen : clrGray;
         DrawZoneLines(g_activeSupportZones[i], zoneColor);
-
-        // Count touches
-        g_activeSupportZones[i].touchCount = CountTouches(rates, g_activeSupportZones[i], sensitivity, ZONE_LOOKBACK);
 
         // Update nearest support
         if(g_activeSupportZones[i].topBoundary < currentPrice)
@@ -332,36 +325,6 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
                 candleOpen, candleClose);
 
     return false;
-}
-//+------------------------------------------------------------------+
-//| Count touches for a zone                                         |
-//+------------------------------------------------------------------+
-int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity, int lookbackPeriod)
-{
-    int touches = 0;
-    int barsToCheck = MathMin(lookbackPeriod, ArraySize(rates));
-    
-    for (int j = 0; j < barsToCheck; j++)
-    {
-        if (zone.isResistance)
-        {
-            // For resistance, check if high touches the zone
-            if (rates[j].high >= zone.bottomBoundary && rates[j].high <= zone.topBoundary)
-                touches++;
-        }
-        else
-        {
-            // For support, check if low touches the zone
-            if (rates[j].low >= zone.bottomBoundary && rates[j].low <= zone.topBoundary)
-                touches++;
-        }
-    }
-
-    PrintFormat("CountTouches: Zone [%s] at [%.5f-%.5f] has %d touches",
-                zone.isResistance ? "Resistance" : "Support",
-                zone.bottomBoundary, zone.topBoundary, touches);
-
-    return touches;
 }
 //+------------------------------------------------------------------+
 //| Delete all S/R zone lines                                        |
@@ -481,7 +444,6 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
     // Store the defining price
     newZone.definingClose = rates[shift].close;
     newZone.isResistance = isResistance;
-    newZone.touchCount = 1;  // Initialize with 1 touch
     newZone.shift = shift;
     
     // Generate unique IDs
@@ -496,8 +458,7 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
         {
             Print("Created resistance zone - Top: ", newZone.topBoundary, 
                   " Bottom: ", newZone.bottomBoundary,
-                  " Close: ", newZone.definingClose,
-                  " Touches: ", newZone.touchCount);
+                  " Close: ", newZone.definingClose);
             DrawZoneLines(newZone, RESISTANCE_ZONE_COLOR);
         }
     }
@@ -507,48 +468,8 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
         {
             Print("Created support zone - Top: ", newZone.topBoundary,
                   " Bottom: ", newZone.bottomBoundary,
-                  " Close: ", newZone.definingClose,
-                  " Touches: ", newZone.touchCount);
+                  " Close: ", newZone.definingClose);
             DrawZoneLines(newZone, SUPPORT_ZONE_COLOR);
-        }
-    }
-}
-// Add new function to count and validate zone touches
-void CountAndValidateZoneTouches(const MqlRates &rates[], double sensitivity, int lookbackPeriod)
-{
-    // Process resistance zones
-    for(int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
-    {
-        g_activeResistanceZones[i].touchCount = CountTouches(rates, g_activeResistanceZones[i], sensitivity, lookbackPeriod);
-        if(g_activeResistanceZones[i].touchCount < SR_MIN_TOUCHES)
-        {
-            Print("Removing resistance zone at ", g_activeResistanceZones[i].topBoundary, 
-                  " - only ", g_activeResistanceZones[i].touchCount, " touches");
-            ArrayRemove(g_activeResistanceZones, i, 1);
-            continue;
-        }
-        else
-        {
-            Print("Keeping resistance zone at ", g_activeResistanceZones[i].topBoundary,
-                  " - ", g_activeResistanceZones[i].touchCount, " touches");
-        }
-    }
-
-    // Process support zones
-    for(int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
-    {
-        g_activeSupportZones[i].touchCount = CountTouches(rates, g_activeSupportZones[i], sensitivity, lookbackPeriod);
-        if(g_activeSupportZones[i].touchCount < SR_MIN_TOUCHES)
-        {
-            Print("Removing support zone at ", g_activeSupportZones[i].bottomBoundary,
-                  " - only ", g_activeSupportZones[i].touchCount, " touches");
-            ArrayRemove(g_activeSupportZones, i, 1);
-            continue;
-        }
-        else
-        {
-            Print("Keeping support zone at ", g_activeSupportZones[i].bottomBoundary,
-                  " - ", g_activeSupportZones[i].touchCount, " touches");
         }
     }
 }
@@ -697,17 +618,15 @@ void LogZoneState()
     Print("Active Resistance Zones:");
     for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
     {
-        PrintFormat("Zone %d: Top=%.5f, Bottom=%.5f, Touches=%d",
-                    i, g_activeResistanceZones[i].topBoundary, g_activeResistanceZones[i].bottomBoundary,
-                    g_activeResistanceZones[i].touchCount);
+        PrintFormat("Zone %d: Top=%.5f, Bottom=%.5f",
+                    i, g_activeResistanceZones[i].topBoundary, g_activeResistanceZones[i].bottomBoundary);
     }
 
     Print("Active Support Zones:");
     for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
     {
-        PrintFormat("Zone %d: Top=%.5f, Bottom=%.5f, Touches=%d",
-                    i, g_activeSupportZones[i].topBoundary, g_activeSupportZones[i].bottomBoundary,
-                    g_activeSupportZones[i].touchCount);
+        PrintFormat("Zone %d: Top=%.5f, Bottom=%.5f",
+                    i, g_activeSupportZones[i].topBoundary, g_activeSupportZones[i].bottomBoundary);
     }
 }
 

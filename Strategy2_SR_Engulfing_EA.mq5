@@ -29,7 +29,6 @@ input bool        Use_Trend_Filter = false;   // Enable/Disable the main Trend F
 input ENUM_LOT_SIZING_MODE LotSizing_Mode = DYNAMIC_MARGIN_CHECK; // Lot sizing strategy
 input int         SR_Lookback = 20;    // Number of candles to look back for S/R zones
 input int         SR_Sensitivity_Pips = 3; // Min distance between S/R zone defining closes
-input int         SR_Min_Touches = 2;   // Minimum touches required for a zone to be tradable
 input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven (0=disabled)
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
 
@@ -299,9 +298,8 @@ void CheckStrategy()
          }
       }
       
-      bool minTouchesMet = (nearestSupport.touchCount >= SR_Min_Touches);
       
-      if(engulfingCloseInZone && priceBelowEMARecently && minTouchesMet)
+      if(engulfingCloseInZone && priceBelowEMARecently )
       {
          if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH)
             return;
@@ -335,9 +333,8 @@ void CheckStrategy()
          }
       }
       
-      bool minTouchesMet = (nearestResistance.touchCount >= SR_Min_Touches);
       
-      if(engulfingCloseInZone && priceAboveEMARecently && minTouchesMet)
+      if(engulfingCloseInZone && priceAboveEMARecently )
       {
          if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
             return;
