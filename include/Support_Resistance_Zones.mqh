@@ -94,7 +94,11 @@ void CheckAndRemoveBrokenZones(const MqlRates &rates[], double emaValue)
         {
             Print("Removing broken resistance zone at ", g_activeResistanceZones[i].topBoundary);
             DeleteZoneObjects(g_activeResistanceZones[i]);
-            if (!ArrayRemove(g_activeResistanceZones, i, 1))
+            if (ArrayRemove(g_activeResistanceZones, i, 1))
+            {
+                Print("Successfully removed resistance zone at index ", i);
+            }
+            else
             {
                 Print("Failed to remove resistance zone at index ", i);
             }
@@ -108,7 +112,11 @@ void CheckAndRemoveBrokenZones(const MqlRates &rates[], double emaValue)
         {
             Print("Removing broken support zone at ", g_activeSupportZones[i].bottomBoundary);
             DeleteZoneObjects(g_activeSupportZones[i]);
-            if (!ArrayRemove(g_activeSupportZones, i, 1))
+            if (ArrayRemove(g_activeSupportZones, i, 1))
+            {
+                Print("Successfully removed support zone at index ", i);
+            }
+            else
             {
                 Print("Failed to remove support zone at index ", i);
             }
@@ -242,21 +250,24 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
 //+------------------------------------------------------------------+
 bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity, double emaValue)
 {
-    // Check if zone already exists
+    // Check if a similar zone already exists
     for (int j = 0; j < ArraySize(existingZones); j++)
     {
-        if (MathAbs(newZone.definingClose - existingZones[j].definingClose) < sensitivity)
+        // Check both proximity (sensitivity) and time of creation
+        if (MathAbs(newZone.definingClose - existingZones[j].definingClose) < sensitivity &&
+            newZone.shift == existingZones[j].shift) // Ensure the shift (time) is different
         {
-            Print("Zone already exists: ", newZone.definingClose);
+            Print("Zone already exists: Close=", newZone.definingClose, " Time Shift=", newZone.shift);
             return false;
         }
     }
 
+    // Add the new zone if valid
     int size = ArraySize(existingZones);
     if (ArrayResize(existingZones, size + 1))
     {
         existingZones[size] = newZone;
-        Print("Zone added: ", newZone.definingClose);
+        Print("Zone added: Close=", newZone.definingClose, " Time Shift=", newZone.shift);
         return true;
     }
 
@@ -319,23 +330,23 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 //+------------------------------------------------------------------+
 //| Count touches for a zone                                         |
 //+------------------------------------------------------------------+
-int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity)
+int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity, int lookbackPeriod)
 {
     int touches = 0;
-    int barsToCheck = MathMin(ZONE_LOOKBACK, ArraySize(rates));
+    int barsToCheck = MathMin(lookbackPeriod, ArraySize(rates));
     
-    for(int j = 0; j < barsToCheck; j++)
+    for (int j = 0; j < barsToCheck; j++)
     {
-        if(zone.isResistance)
+        if (zone.isResistance)
         {
             // For resistance, check if high touches the zone
-            if(rates[j].high >= zone.bottomBoundary && rates[j].high <= zone.topBoundary)
+            if (rates[j].high >= zone.bottomBoundary && rates[j].high <= zone.topBoundary)
                 touches++;
         }
         else
         {
             // For support, check if low touches the zone
-            if(rates[j].low >= zone.bottomBoundary && rates[j].low <= zone.topBoundary)
+            if (rates[j].low >= zone.bottomBoundary && rates[j].low <= zone.topBoundary)
                 touches++;
         }
     }
