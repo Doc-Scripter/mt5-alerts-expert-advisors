@@ -81,15 +81,24 @@ void UpdateAndDrawValidSRZones(int lookbackPeriod, int sensitivityPips, double e
     LogZoneState();
 }
 
-// New function to check for broken zones
+// Function to check for broken zones
+// Updated function to check for broken zones using completed candles
 void CheckAndRemoveBrokenZones(const MqlRates &rates[], double emaValue)
 {
-    Print("Checking for broken zones...");
+    Print("Checking for broken zones using completed candles...");
+    
+    // Make sure we have enough data
+    if (ArraySize(rates) < 2)
+    {
+        Print("CheckAndRemoveBrokenZones: Not enough candle data to check for broken zones");
+        return;
+    }
 
     // Check resistance zones
     for (int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
     {
-        if (IsZoneBroken(g_activeResistanceZones[i], rates, 0))
+        // Use shift 1 (last completed candle) for zone breaking check
+        if (IsZoneBroken(g_activeResistanceZones[i], rates, 1))
         {
             Print("Removing broken resistance zone at ", g_activeResistanceZones[i].topBoundary);
             DeleteZoneObjects(g_activeResistanceZones[i]);
@@ -107,7 +116,8 @@ void CheckAndRemoveBrokenZones(const MqlRates &rates[], double emaValue)
     // Check support zones
     for (int i = ArraySize(g_activeSupportZones) - 1; i >= 0; i--)
     {
-        if (IsZoneBroken(g_activeSupportZones[i], rates, 0))
+        // Use shift 1 (last completed candle) for zone breaking check
+        if (IsZoneBroken(g_activeSupportZones[i], rates, 1))
         {
             Print("Removing broken support zone at ", g_activeSupportZones[i].bottomBoundary);
             DeleteZoneObjects(g_activeSupportZones[i]);
@@ -270,58 +280,88 @@ bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity
     Print("Failed to resize zone array");
     return false;
 }
-// Update IsZoneBroken to be more precise
+// Update IsZoneBroken to use completed candles instead of current candle
 bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 {
-    if (shift >= ArraySize(rates)) return false;
+    // Use shift 1 by default if not specified (the last completed candle)
+    if (shift == 0) shift = 1;
+    
+    // Safety check
+    if (shift >= ArraySize(rates)) 
+    {
+        Print("IsZoneBroken: Invalid shift value or insufficient data");
+        return false;
+    }
 
     double candleOpen = rates[shift].open;
     double candleClose = rates[shift].close;
+    double candleHigh = rates[shift].high;
+    double candleLow = rates[shift].low;
+    bool isBullish = candleClose > candleOpen;
+
+    PrintFormat("IsZoneBroken: Checking %s zone [%.5f-%.5f] against completed candle at %s (O=%.5f, H=%.5f, L=%.5f, C=%.5f)",
+                zone.isResistance ? "Resistance" : "Support",
+                zone.bottomBoundary, zone.topBoundary,
+                TimeToString(rates[shift].time), candleOpen, candleHigh, candleLow, candleClose);
 
     if (zone.isResistance)
     {
         // Resistance is broken if:
-          if (candleClose > zone.bottomBoundary && candleClose > candleOpen && candleOpen <= zone.bottomBoundary)//correct
+        
+        // 1. A bullish candle closes significantly above the zone
+        if (isBullish && candleClose > zone.topBoundary)
         {
-            PrintFormat("Resistance zone not broken by bullish candle at %s (Close=%.5f > Top=%.5f)", 
-                        TimeToString(rates[shift].time), candleClose, zone.topBoundary);
-            return false;
-        }
-        // 1. A bearish candle closes above the upper boundary
-        if (candleClose > zone.bottomBoundary && candleClose < candleOpen)//correct
-        {
-            PrintFormat("Resistance zone broken by bearish candle at %s (Close=%.5f > Top=%.5f)", 
+            PrintFormat("Resistance zone broken by bullish candle closing above zone at %s (Close=%.5f > Top=%.5f)", 
                         TimeToString(rates[shift].time), candleClose, zone.topBoundary);
             return true;
         }
-        // 2. Both the candle's open and close are above the lower boundary
-        if (candleOpen > zone.bottomBoundary && candleClose > zone.bottomBoundary)
+        
+        // 2. A bearish candle opens above the zone and closes within or below
+        if (!isBullish && candleOpen > zone.topBoundary && candleClose <= zone.topBoundary)
         {
-            PrintFormat("Resistance zone broken by full candle above lower boundary at %s (Open=%.5f > Bottom=%.5f, Close=%.5f > Bottom=%.5f)", 
-                        TimeToString(rates[shift].time), candleOpen, zone.bottomBoundary, candleClose, zone.bottomBoundary);
+            PrintFormat("Resistance zone broken by bearish candle opening above zone at %s (Open=%.5f > Top=%.5f)", 
+                        TimeToString(rates[shift].time), candleOpen, zone.topBoundary);
+            return true;
+        }
+        
+        // 3. The entire candle body is above the zone
+        if (MathMin(candleOpen, candleClose) > zone.topBoundary)
+        {
+            PrintFormat("Resistance zone broken by candle body completely above zone at %s (Min(O,C)=%.5f > Top=%.5f)", 
+                        TimeToString(rates[shift].time), MathMin(candleOpen, candleClose), zone.topBoundary);
             return true;
         }
     }
     else // Support zone
     {
         // Support is broken if:
-        // 1. The entire candle is below the zone
-        if (candleOpen < zone.bottomBoundary && candleClose < zone.bottomBoundary)
+        
+        // 1. A bearish candle closes significantly below the zone
+        if (!isBullish && candleClose < zone.bottomBoundary)
         {
-            PrintFormat("Support zone broken by full candle below zone at %s (Open=%.5f, Close=%.5f, Bottom=%.5f)", 
-                        TimeToString(rates[shift].time), candleOpen, candleClose, zone.bottomBoundary);
+            PrintFormat("Support zone broken by bearish candle closing below zone at %s (Close=%.5f < Bottom=%.5f)", 
+                        TimeToString(rates[shift].time), candleClose, zone.bottomBoundary);
             return true;
         }
-        // 2. A bullish candle closes below the upper boundary
-        if (candleClose < zone.topBoundary && candleClose > candleOpen)
+        
+        // 2. A bullish candle opens below the zone and closes within or above
+        if (isBullish && candleOpen < zone.bottomBoundary && candleClose >= zone.bottomBoundary)
         {
-            PrintFormat("Support zone broken by bullish candle at %s (Close=%.5f < Top=%.5f)", 
-                        TimeToString(rates[shift].time), candleClose, zone.topBoundary);
+            PrintFormat("Support zone broken by bullish candle opening below zone at %s (Open=%.5f < Bottom=%.5f)", 
+                        TimeToString(rates[shift].time), candleOpen, zone.bottomBoundary);
+            return true;
+        }
+        
+        // 3. The entire candle body is below the zone
+        if (MathMax(candleOpen, candleClose) < zone.bottomBoundary)
+        {
+            PrintFormat("Support zone broken by candle body completely below zone at %s (Max(O,C)=%.5f < Bottom=%.5f)", 
+                        TimeToString(rates[shift].time), MathMax(candleOpen, candleClose), zone.bottomBoundary);
             return true;
         }
     }
 
-    // Enhanced logging
+    // Zone not broken
     PrintFormat("Zone not broken: %s zone at [%.5f-%.5f], Candle O=%.5f, C=%.5f",
                 zone.isResistance ? "Resistance" : "Support",
                 zone.bottomBoundary, zone.topBoundary, 
@@ -556,8 +596,8 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     {
         SRZone zone = g_activeResistanceZones[i];
 
-        // Check if the zone is broken
-        if (IsZoneBroken(zone, rates, 0))
+        // Check if the zone is broken using completed candle
+        if (ArraySize(rates) >= 2 && IsZoneBroken(zone, rates, 1))
         {
             Print("Invalidating resistance zone at ", zone.topBoundary, " due to break condition.");
             DeleteZoneObjects(zone);
@@ -578,8 +618,8 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     {
         SRZone zone = g_activeSupportZones[i];
 
-        // Check if the zone is broken
-        if (IsZoneBroken(zone, rates, 0))
+        // Check if the zone is broken using completed candle
+        if (ArraySize(rates) >= 2 && IsZoneBroken(zone, rates, 1))
         {
             Print("Invalidating support zone at ", zone.bottomBoundary, " due to break condition.");
             DeleteZoneObjects(zone);
