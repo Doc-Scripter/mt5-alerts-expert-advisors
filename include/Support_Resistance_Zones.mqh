@@ -277,61 +277,65 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
         // 1. A bullish candle opens above the lower boundary
         if (candleOpen > zone.bottomBoundary && candleClose > candleOpen)
         {
-            Print("Resistance zone broken by bullish candle at ", TimeToString(rates[shift].time), 
-                  " (Open above lower boundary)");
+            PrintFormat("Resistance zone broken by bullish candle at %s (Open=%.5f > Bottom=%.5f)", 
+                TimeToString(rates[shift].time), candleOpen, zone.bottomBoundary);
             return true;
         }
         // 2. A bearish candle closes above the lower boundary
         if (candleClose > zone.bottomBoundary && candleClose < candleOpen)
         {
-            Print("Resistance zone broken by bearish candle at ", TimeToString(rates[shift].time),
-                  " (Close above lower boundary)");
+            PrintFormat("Resistance zone broken by bearish candle at %s (Close=%.5f > Bottom=%.5f)", 
+                TimeToString(rates[shift].time), candleClose, zone.bottomBoundary);
             return true;
         }
     }
-    else  // Support zone
+    else // Support zone
     {
         // Support is broken if:
-        // 1. A bullish candle closes below the upper boundary
-        if (candleClose < zone.topBoundary && candleClose > candleOpen)
-        {
-            Print("Support zone broken by bullish candle at ", TimeToString(rates[shift].time),
-                  " (Close below upper boundary)");
-            return true;
-        }
-        // 2. A bearish candle opens below the upper boundary
+        // 1. A bearish candle opens below the upper boundary
         if (candleOpen < zone.topBoundary && candleClose < candleOpen)
         {
-            Print("Support zone broken by bearish candle at ", TimeToString(rates[shift].time),
-                  " (Open below upper boundary)");
+            PrintFormat("Support zone broken by bearish candle at %s (Open=%.5f < Top=%.5f)", 
+                TimeToString(rates[shift].time), candleOpen, zone.topBoundary);
+            return true;
+        }
+        // 2. A bullish candle closes below the upper boundary
+        if (candleClose < zone.topBoundary && candleClose > candleOpen)
+        {
+            PrintFormat("Support zone broken by bullish candle at %s (Close=%.5f < Top=%.5f)", 
+                TimeToString(rates[shift].time), candleClose, zone.topBoundary);
             return true;
         }
     }
 
-    // Log zone state for debugging
-    PrintFormat("Zone not broken: %s zone at [%.5f-%.5f], Candle Open=%.5f, Close=%.5f",
-                zone.isResistance ? "Resistance" : "Support",
-                zone.bottomBoundary, zone.topBoundary, candleOpen, candleClose);
+    // Enhanced logging
+    PrintFormat("Zone not broken: %s zone at [%.5f-%.5f], Candle O=%.5f, C=%.5f",
+        zone.isResistance ? "Resistance" : "Support",
+        zone.bottomBoundary, zone.topBoundary, 
+        candleOpen, candleClose);
 
     return false;
 }
 //+------------------------------------------------------------------+
 //| Count touches for a zone                                         |
 //+------------------------------------------------------------------+
-int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity, int lookbackPeriod = ZONE_LOOKBACK)
+int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity)
 {
     int touches = 0;
-    int barsToCheck = MathMin(lookbackPeriod, ArraySize(rates));
+    int barsToCheck = MathMin(ZONE_LOOKBACK, ArraySize(rates));
+    
     for(int j = 0; j < barsToCheck; j++)
     {
         if(zone.isResistance)
         {
-            if(MathAbs(rates[j].high - zone.topBoundary) <= sensitivity)
+            // For resistance, check if high touches the zone
+            if(rates[j].high >= zone.bottomBoundary && rates[j].high <= zone.topBoundary)
                 touches++;
         }
         else
         {
-            if(MathAbs(rates[j].low - zone.bottomBoundary) <= sensitivity)
+            // For support, check if low touches the zone
+            if(rates[j].low >= zone.bottomBoundary && rates[j].low <= zone.topBoundary)
                 touches++;
         }
     }
@@ -449,6 +453,22 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
 
     // Log the current state of zones
     LogZoneState();
+}
+// Improved zone creation
+void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
+{
+    SRZone newZone;
+    if (isResistance)
+    {
+        newZone.bottomBoundary = rates[shift].close;  // Use close as bottom
+        newZone.topBoundary = rates[shift].high;      // Use high as top
+    }
+    else // Support
+    {
+        newZone.bottomBoundary = rates[shift].low;    // Use low as bottom
+        newZone.topBoundary = rates[shift].close;     // Use close as top
+    }
+    // ... rest of zone creation
 }
 // Add new function to count and validate zone touches
 void CountAndValidateZoneTouches(const MqlRates &rates[], double sensitivity, int lookbackPeriod)
