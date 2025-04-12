@@ -543,10 +543,13 @@ void DrawDebugSRZones(const MqlRates &rates[], int sensitivityPips, double emaVa
           " Top=", debugResistanceZone.topBoundary);
     DrawZoneLines(debugResistanceZone, RESISTANCE_ZONE_COLOR);
 }
-// New function to create and draw S/R zones
+// Function to create and draw S/R zones
 void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double emaValue)
 {
     double sensitivity = sensitivityPips * _Point;
+    double minZoneHeight = MIN_CANDLE_SIZE_MULTIPLIER * _Point; // Minimum height for a zone
+
+    Print("CreateAndDrawSRZones: Starting with sensitivity=", sensitivityPips, " EMA=", emaValue);
 
     // Process resistance zones
     for (int i = ArraySize(g_activeResistanceZones) - 1; i >= 0; i--)
@@ -595,9 +598,19 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
     // Create new zones if the current candle is valid
     if (rates[0].close < emaValue)
     {
+        // Create support zone
         SRZone supportZone;
+        
+        // For support zones, bottom should be lower than top
         supportZone.bottomBoundary = rates[0].low;
-        supportZone.topBoundary = MathMax(rates[0].open, rates[0].close);
+        supportZone.topBoundary = MathMin(rates[0].open, rates[0].close); // Use the lower of open/close as top
+        
+        // Ensure minimum zone height
+        if (supportZone.topBoundary - supportZone.bottomBoundary < minZoneHeight)
+        {
+            supportZone.bottomBoundary = supportZone.topBoundary - minZoneHeight;
+        }
+        
         supportZone.definingClose = rates[0].close;
         supportZone.isResistance = false;
         supportZone.shift = 0;
@@ -607,16 +620,27 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
         if (AddZoneIfValid(supportZone, g_activeSupportZones, sensitivity, emaValue))
         {
             Print("Creating support zone - Bottom=", supportZone.bottomBoundary, 
-                  " Top=", supportZone.topBoundary);
+                  " Top=", supportZone.topBoundary, 
+                  " Height=", (supportZone.topBoundary - supportZone.bottomBoundary));
             DrawZoneLines(supportZone, SUPPORT_ZONE_COLOR);
         }
     }
 
     if (rates[0].close > emaValue)
     {
+        // Create resistance zone
         SRZone resistanceZone;
-        resistanceZone.bottomBoundary = MathMin(rates[0].open, rates[0].close);
+        
+        // For resistance zones, top should be higher than bottom
+        resistanceZone.bottomBoundary = MathMax(rates[0].open, rates[0].close); // Use the higher of open/close as bottom
         resistanceZone.topBoundary = rates[0].high;
+        
+        // Ensure minimum zone height
+        if (resistanceZone.topBoundary - resistanceZone.bottomBoundary < minZoneHeight)
+        {
+            resistanceZone.topBoundary = resistanceZone.bottomBoundary + minZoneHeight;
+        }
+        
         resistanceZone.definingClose = rates[0].close;
         resistanceZone.isResistance = true;
         resistanceZone.shift = 0;
@@ -626,10 +650,14 @@ void CreateAndDrawSRZones(const MqlRates &rates[], int sensitivityPips, double e
         if (AddZoneIfValid(resistanceZone, g_activeResistanceZones, sensitivity, emaValue))
         {
             Print("Creating resistance zone - Bottom=", resistanceZone.bottomBoundary, 
-                  " Top=", resistanceZone.topBoundary);
+                  " Top=", resistanceZone.topBoundary,
+                  " Height=", (resistanceZone.topBoundary - resistanceZone.bottomBoundary));
             DrawZoneLines(resistanceZone, RESISTANCE_ZONE_COLOR);
         }
     }
+    
+    // Log the current state of zones after creation
+    LogZoneState();
 }
 
 // New function to log the current state of zones
