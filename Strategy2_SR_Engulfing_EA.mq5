@@ -203,6 +203,9 @@ void OnTick()
     {
         CheckForEngulfingAndExecuteTrade(rates, SR_Sensitivity_Pips * _Point);
     }
+
+    // Log the current state of zones
+    LogZoneState();
 }
 
 //+------------------------------------------------------------------+
