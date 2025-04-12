@@ -285,45 +285,51 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     if (zone.isResistance)
     {
         // Resistance is broken if:
-        // 1. A bullish candle opens above the lower boundary
-        if (candleOpen > zone.bottomBoundary && candleClose > candleOpen)
+          if (candleClose > zone.bottomBoundary && candleClose > candleOpen && candleOpen <= zone.bottomBoundary)//correct
         {
-            PrintFormat("Resistance zone broken by bullish candle at %s (Open=%.5f > Bottom=%.5f)", 
-                TimeToString(rates[shift].time), candleOpen, zone.bottomBoundary);
+            PrintFormat("Resistance zone not broken by bullish candle at %s (Close=%.5f > Top=%.5f)", 
+                        TimeToString(rates[shift].time), candleClose, zone.topBoundary);
+            return false;
+        }
+        // 1. A bearish candle closes above the upper boundary
+        if (candleClose > zone.bottomBoundary && candleClose < candleOpen)//correct
+        {
+            PrintFormat("Resistance zone broken by bearish candle at %s (Close=%.5f > Top=%.5f)", 
+                        TimeToString(rates[shift].time), candleClose, zone.topBoundary);
             return true;
         }
-        // 2. A bearish candle closes above the lower boundary
-        if (candleClose > zone.bottomBoundary && candleClose < candleOpen)
+        // 2. Both the candle's open and close are above the lower boundary
+        if (candleOpen > zone.bottomBoundary && candleClose > zone.bottomBoundary)
         {
-            PrintFormat("Resistance zone broken by bearish candle at %s (Close=%.5f > Bottom=%.5f)", 
-                TimeToString(rates[shift].time), candleClose, zone.bottomBoundary);
+            PrintFormat("Resistance zone broken by full candle above lower boundary at %s (Open=%.5f > Bottom=%.5f, Close=%.5f > Bottom=%.5f)", 
+                        TimeToString(rates[shift].time), candleOpen, zone.bottomBoundary, candleClose, zone.bottomBoundary);
             return true;
         }
     }
     else // Support zone
     {
         // Support is broken if:
-        // 1. A bearish candle opens below the upper boundary
-        if (candleOpen < zone.topBoundary && candleClose < candleOpen)
+        // 1. The entire candle is below the zone
+        if (candleOpen < zone.bottomBoundary && candleClose < zone.bottomBoundary)
         {
-            PrintFormat("Support zone broken by bearish candle at %s (Open=%.5f < Top=%.5f)", 
-                TimeToString(rates[shift].time), candleOpen, zone.topBoundary);
+            PrintFormat("Support zone broken by full candle below zone at %s (Open=%.5f, Close=%.5f, Bottom=%.5f)", 
+                        TimeToString(rates[shift].time), candleOpen, candleClose, zone.bottomBoundary);
             return true;
         }
         // 2. A bullish candle closes below the upper boundary
         if (candleClose < zone.topBoundary && candleClose > candleOpen)
         {
             PrintFormat("Support zone broken by bullish candle at %s (Close=%.5f < Top=%.5f)", 
-                TimeToString(rates[shift].time), candleClose, zone.topBoundary);
+                        TimeToString(rates[shift].time), candleClose, zone.topBoundary);
             return true;
         }
     }
 
     // Enhanced logging
     PrintFormat("Zone not broken: %s zone at [%.5f-%.5f], Candle O=%.5f, C=%.5f",
-        zone.isResistance ? "Resistance" : "Support",
-        zone.bottomBoundary, zone.topBoundary, 
-        candleOpen, candleClose);
+                zone.isResistance ? "Resistance" : "Support",
+                zone.bottomBoundary, zone.topBoundary, 
+                candleOpen, candleClose);
 
     return false;
 }
@@ -350,6 +356,11 @@ int CountTouches(const MqlRates &rates[], const SRZone &zone, double sensitivity
                 touches++;
         }
     }
+
+    PrintFormat("CountTouches: Zone [%s] at [%.5f-%.5f] has %d touches",
+                zone.isResistance ? "Resistance" : "Support",
+                zone.bottomBoundary, zone.topBoundary, touches);
+
     return touches;
 }
 //+------------------------------------------------------------------+
