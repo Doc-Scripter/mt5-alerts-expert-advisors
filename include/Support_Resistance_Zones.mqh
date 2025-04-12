@@ -273,46 +273,37 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 
     if (zone.isResistance)
     {
-// Resistance is broken if:
-// 1. A bullish candle opens above the lower boundary
-// Resistance is broken if:
-// 1. A bullish candle opens above the lower boundary
-        // Resistance is broken if:
-        // 1. A bullish candle opens above the lower boundary
         // Resistance is broken if:
         // 1. A bullish candle opens above the lower boundary
         if (candleOpen > zone.bottomBoundary && candleClose > candleOpen)
         {
-            Print("Resistance zone broken by bullish candle at ", TimeToString(rates[shift].time));
-            return  true;
-// 2. A bearish candle closes above the lower boundary
+            Print("Resistance zone broken by bullish candle at ", TimeToString(rates[shift].time), 
+                  " (Open above lower boundary)");
+            return true;
         }
-// 2. A bearish candle closes above the lower boundary
+        // 2. A bearish candle closes above the lower boundary
         if (candleClose > zone.bottomBoundary && candleClose < candleOpen)
         {
-            Print("Resistance zone broken by bearish candle at ", TimeToString(rates[shift].time));
-// Support is broken if:
-        // 1. A bearish candle opens below the upper boundary
+            Print("Resistance zone broken by bearish candle at ", TimeToString(rates[shift].time),
+                  " (Close above lower boundary)");
             return true;
-// Support is broken if:
-        // 1. A bearish candle opens below the upper boundary
         }
     }
-// Support is broken if:
-        // 1. A bearish candle opens below the upper boundary
-    else
+    else  // Support zone
     {
-// Support is broken if:
-        // 1. A bearish candle opens below the upper boundary
-        if (candleOpen < zone.topBoundary && candleClose < candleOpen)
-        {
-            Print("Support zone broken by bearish candle at ", TimeToString(rates[shift].time));
-           return true;
-        }
-// 2. A bullish candle closes below the upper boundary
+        // Support is broken if:
+        // 1. A bullish candle closes below the upper boundary
         if (candleClose < zone.topBoundary && candleClose > candleOpen)
         {
-            Print("Support zone broken by bullish candle at ", TimeToString(rates[shift].time));
+            Print("Support zone broken by bullish candle at ", TimeToString(rates[shift].time),
+                  " (Close below upper boundary)");
+            return true;
+        }
+        // 2. A bearish candle opens below the upper boundary
+        if (candleOpen < zone.topBoundary && candleClose < candleOpen)
+        {
+            Print("Support zone broken by bearish candle at ", TimeToString(rates[shift].time),
+                  " (Open below upper boundary)");
             return true;
         }
     }
