@@ -440,19 +440,47 @@ bool IsNewValidZone(const MqlRates &rates[], int shift, double emaValue, bool is
 //+------------------------------------------------------------------+
 void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance, double sensitivity, double emaValue)
 {
+    // Validate input parameters
+    if(shift >= ArraySize(rates))
+    {
+        Print("CreateAndDrawNewZone: Invalid shift value");
+        return;
+    }
+
+    // Log input parameters
+    PrintFormat("Creating new %s zone at shift %d: Open=%.5f, High=%.5f, Low=%.5f, Close=%.5f",
+                isResistance ? "resistance" : "support",
+                shift,
+                rates[shift].open,
+                rates[shift].high,
+                rates[shift].low,
+                rates[shift].close);
+
     SRZone newZone;
+    
+    // Initialize zone properties
     newZone.definingClose = rates[shift].close;
     newZone.shift = shift;
     newZone.isResistance = isResistance;
     newZone.touchCount = 1;
+    newZone.chartObjectID_Top = (long)rates[shift].time;
+    newZone.chartObjectID_Bottom = (long)rates[shift].time + 1;
 
-    if (isResistance)
+    if(isResistance)
     {
-        newZone.bottomBoundary = MathMin(rates[shift].open, rates[shift].close);
+        // For resistance zones
+        newZone.bottomBoundary = MathMax(rates[shift].open, rates[shift].close);
         newZone.topBoundary = rates[shift].high;
-        newZone.chartObjectID_Top = TimeCurrent() + shift;
-        newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
-        if (AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity, emaValue))
+        
+        // Validate boundaries
+        if(newZone.topBoundary <= newZone.bottomBoundary)
+        {
+            Print("Invalid resistance zone boundaries detected");
+            return;
+        }
+
+        // Add to resistance zones array
+        if(AddZoneIfValid(newZone, g_activeResistanceZones, sensitivity, emaValue))
         {
             Print("Creating resistance zone - Bottom=", newZone.bottomBoundary, 
                   " Top=", newZone.topBoundary);
@@ -461,11 +489,19 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
     }
     else
     {
-        newZone.bottomBoundary = MathMin(rates[shift].open, rates[shift].close);
-        newZone.topBoundary = MathMax(rates[shift].open, rates[shift].close);
-        newZone.chartObjectID_Top = TimeCurrent() + shift;
-        newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
-        if (AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue))
+        // For support zones
+        newZone.bottomBoundary = rates[shift].low;
+        newZone.topBoundary = MathMin(rates[shift].open, rates[shift].close);
+        
+        // Validate boundaries
+        if(newZone.topBoundary <= newZone.bottomBoundary)
+        {
+            Print("Invalid support zone boundaries detected");
+            return;
+        }
+
+        // Add to support zones array
+        if(AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue))
         {
             Print("Creating support zone - Bottom=", newZone.bottomBoundary, 
                   " Top=", newZone.topBoundary);
