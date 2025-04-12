@@ -243,6 +243,9 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
 //+------------------------------------------------------------------+
 bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity, double emaValue)
 {
+    PrintFormat("Attempting to add zone: Top=%.5f, Bottom=%.5f, Close=%.5f",
+                newZone.topBoundary, newZone.bottomBoundary, newZone.definingClose);
+
     // Check if a similar zone already exists
     for (int j = 0; j < ArraySize(existingZones); j++)
     {
@@ -404,57 +407,76 @@ bool IsNewValidZone(const MqlRates &rates[], int shift, double emaValue, bool is
 void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
 {
     // Validate input
-    if(shift >= ArraySize(rates))
+    if (shift >= ArraySize(rates))
     {
         Print("Invalid shift value in CreateAndDrawNewZone");
         return;
     }
 
+    // Log the candle data for debugging
+    PrintFormat("Processing Candle: Time=%s, Open=%.5f, Close=%.5f, High=%.5f, Low=%.5f",
+                TimeToString(rates[shift].time), rates[shift].open, rates[shift].close, rates[shift].high, rates[shift].low);
+
+    // Handle doji candles (open == close)
+    if (rates[shift].open == rates[shift].close)
+    {
+        Print("Doji candle detected. Skipping zone creation.");
+        return;
+    }
+
     SRZone newZone = {0}; // Initialize all members to 0/false
-    
-    if(isResistance)
+
+    if (isResistance)
     {
         // For resistance zones
-        newZone.topBoundary = rates[shift].high;
-        newZone.bottomBoundary = MathMax(rates[shift].open, rates[shift].close);
-        
-        // Validate zone boundaries
-        if(newZone.topBoundary <= newZone.bottomBoundary)
+        if (rates[shift].close > rates[shift].open) // Bullish candle
         {
-            Print("Invalid resistance zone boundaries detected: Top=", newZone.topBoundary, 
-                  " Bottom=", newZone.bottomBoundary);
-            return;
+            newZone.bottomBoundary = rates[shift].open;
+            newZone.topBoundary = rates[shift].close;
+        }
+        else // Bearish candle
+        {
+            newZone.bottomBoundary = rates[shift].close;
+            newZone.topBoundary = rates[shift].open;
         }
     }
     else
     {
         // For support zones
-        newZone.bottomBoundary = rates[shift].low;
-        newZone.topBoundary = MathMin(rates[shift].open, rates[shift].close);
-        
-        // Validate zone boundaries
-        if(newZone.bottomBoundary >= newZone.topBoundary)
+        if (rates[shift].close > rates[shift].open) // Bullish candle
         {
-            Print("Invalid support zone boundaries detected: Top=", newZone.topBoundary, 
-                  " Bottom=", newZone.bottomBoundary);
-            return;
+            newZone.bottomBoundary = rates[shift].open;
+            newZone.topBoundary = rates[shift].close;
+        }
+        else // Bearish candle
+        {
+            newZone.bottomBoundary = rates[shift].close;
+            newZone.topBoundary = rates[shift].open;
         }
     }
-    
+
+    // Validate zone boundaries
+    if (newZone.topBoundary <= newZone.bottomBoundary)
+    {
+        Print("Invalid zone boundaries detected: Top=", newZone.topBoundary, 
+              " Bottom=", newZone.bottomBoundary);
+        return;
+    }
+
     // Store the defining price
     newZone.definingClose = rates[shift].close;
     newZone.isResistance = isResistance;
     newZone.shift = shift;
-    
+
     // Generate unique IDs
     datetime currentTime = TimeCurrent();
     newZone.chartObjectID_Top = (long)currentTime + (shift * 2);
     newZone.chartObjectID_Bottom = (long)currentTime + (shift * 2) + 1;
-    
+
     // Add zone with validation
-    if(isResistance)
+    if (isResistance)
     {
-        if(AddZoneIfValid(newZone, g_activeResistanceZones, 0.0001, 0))
+        if (AddZoneIfValid(newZone, g_activeResistanceZones, 0.0001, 0))
         {
             Print("Created resistance zone - Top: ", newZone.topBoundary, 
                   " Bottom: ", newZone.bottomBoundary,
@@ -464,7 +486,7 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance)
     }
     else
     {
-        if(AddZoneIfValid(newZone, g_activeSupportZones, 0.0001, 0))
+        if (AddZoneIfValid(newZone, g_activeSupportZones, 0.0001, 0))
         {
             Print("Created support zone - Top: ", newZone.topBoundary,
                   " Bottom: ", newZone.bottomBoundary,
