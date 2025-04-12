@@ -401,8 +401,10 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
     newZone.shift = shift;
     newZone.isResistance = isResistance;
     newZone.touchCount = 1;
-    if(isResistance)
+
+    if (isResistance)
     {
+        // Resistance zone logic (unchanged)
         newZone.bottomBoundary = MathMin(rates[shift].open, rates[shift].close);
         newZone.topBoundary = rates[shift].high;
         newZone.chartObjectID_Top = TimeCurrent() + shift;
@@ -411,12 +413,15 @@ void CreateAndDrawNewZone(const MqlRates &rates[], int shift, bool isResistance,
     }
     else
     {
-        newZone.bottomBoundary = rates[shift].low;
-        newZone.topBoundary = MathMax(rates[shift].open, rates[shift].close);
+        // Support zone logic (updated)
+        newZone.bottomBoundary = MathMin(rates[shift].open, rates[shift].close); // Bullish open or bearish close
+        newZone.topBoundary = MathMax(rates[shift].open, rates[shift].close);   // Bearish open or bullish close
         newZone.chartObjectID_Top = TimeCurrent() + shift;
         newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
         AddZoneIfValid(newZone, g_activeSupportZones, sensitivity, emaValue);
     }
+
+    // Draw the zone lines
     DrawZoneLines(newZone, isResistance ? RESISTANCE_ZONE_COLOR : SUPPORT_ZONE_COLOR);
 }
 // Add new function to count and validate zone touches
@@ -481,8 +486,8 @@ void DrawDebugSRZones(const MqlRates &rates[], int sensitivityPips, double emaVa
     // Create a support zone for debugging
     double supportPrice = rates[0].low;
     SRZone debugSupportZone;
-    debugSupportZone.bottomBoundary = supportPrice;
-    debugSupportZone.topBoundary = supportPrice + (10 * _Point);
+    debugSupportZone.bottomBoundary = MathMin(rates[0].open, rates[0].close); // Bullish open or bearish close
+    debugSupportZone.topBoundary = MathMax(rates[0].open, rates[0].close);   // Bearish open or bullish close
     debugSupportZone.definingClose = rates[0].close;
     debugSupportZone.isResistance = false;
     debugSupportZone.shift = 0;
@@ -495,7 +500,7 @@ void DrawDebugSRZones(const MqlRates &rates[], int sensitivityPips, double emaVa
     // Create a resistance zone for debugging
     double resistancePrice = rates[0].high;
     SRZone debugResistanceZone;
-    debugResistanceZone.bottomBoundary = resistancePrice - (10 * _Point);
+    debugResistanceZone.bottomBoundary = MathMin(rates[0].open, rates[0].close);
     debugResistanceZone.topBoundary = resistancePrice;
     debugResistanceZone.definingClose = rates[0].close;
     debugResistanceZone.isResistance = true;
