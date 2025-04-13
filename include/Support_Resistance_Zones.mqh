@@ -354,7 +354,7 @@ bool AddZoneIfValid(SRZone &newZone, SRZone &existingZones[], double sensitivity
     Print("Failed to resize zone array");
     return false;
 }
-// Update IsZoneBroken to use completed candles instead of current candle
+// Update IsZoneBroken to use completed candles and create new zones from breaking candles
 bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
 {
     // Use shift 1 by default if not specified (the last completed candle)
@@ -377,16 +377,46 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
                 zone.isResistance ? "Resistance" : "Support",
                 zone.bottomBoundary, zone.topBoundary,
                 TimeToString(rates[shift].time), candleOpen, candleHigh, candleLow, candleClose);
-
+    
     if (zone.isResistance)
     {
         // Resistance is broken if:
         
-        // 1. A bullish candle closes significantly above the zone
-        if (isBullish && candleClose > zone.topBoundary)
+        // 1. A candle closes significantly above the zone
+        if (candleClose > zone.topBoundary)
         {
-            PrintFormat("Resistance zone broken by bullish candle closing above zone at %s (Close=%.5f > Top=%.5f)", 
+            PrintFormat("Resistance zone broken by candle closing above zone at %s (Close=%.5f > Top=%.5f)", 
                         TimeToString(rates[shift].time), candleClose, zone.topBoundary);
+            
+            // Create a new resistance zone using the breaking candle
+            SRZone newZone;
+            newZone.isResistance = true;
+            
+            // For resistance zones, use the breaking candle to define new boundaries
+            if (isBullish) // Bullish candle
+            {
+                newZone.bottomBoundary = candleOpen;
+                newZone.topBoundary = candleHigh;
+            }
+            else // Bearish candle
+            {
+                newZone.bottomBoundary = candleClose;
+                newZone.topBoundary = candleHigh;
+            }
+            
+            newZone.definingClose = candleClose;
+            newZone.shift = shift;
+            newZone.chartObjectID_Top = TimeCurrent() + shift;
+            newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
+            
+            // Add the new zone
+            if (AddZoneIfValid(newZone, g_activeResistanceZones, 0.0001, 0))
+            {
+                PrintFormat("Created new resistance zone from breaking candle - Top=%.5f, Bottom=%.5f", 
+                           newZone.topBoundary, newZone.bottomBoundary);
+                DrawZoneLines(newZone, RESISTANCE_ZONE_COLOR);
+            }
+            
             return true;
         }
         
@@ -410,11 +440,41 @@ bool IsZoneBroken(const SRZone &zone, const MqlRates &rates[], int shift)
     {
         // Support is broken if:
         
-        // 1. A bearish candle closes significantly below the zone
-        if (!isBullish && candleClose < zone.bottomBoundary)
+        // 1. A candle closes significantly below the zone
+        if (candleClose < zone.bottomBoundary)
         {
-            PrintFormat("Support zone broken by bearish candle closing below zone at %s (Close=%.5f < Bottom=%.5f)", 
+            PrintFormat("Support zone broken by candle closing below zone at %s (Close=%.5f < Bottom=%.5f)", 
                         TimeToString(rates[shift].time), candleClose, zone.bottomBoundary);
+            
+            // Create a new support zone using the breaking candle
+            SRZone newZone;
+            newZone.isResistance = false;
+            
+            // For support zones, use the breaking candle to define new boundaries
+            if (isBullish) // Bullish candle
+            {
+                newZone.bottomBoundary = candleLow;
+                newZone.topBoundary = candleClose;
+            }
+            else // Bearish candle
+            {
+                newZone.bottomBoundary = candleLow;
+                newZone.topBoundary = candleOpen;
+            }
+            
+            newZone.definingClose = candleClose;
+            newZone.shift = shift;
+            newZone.chartObjectID_Top = TimeCurrent() + shift;
+            newZone.chartObjectID_Bottom = TimeCurrent() + shift + 1;
+            
+            // Add the new zone
+            if (AddZoneIfValid(newZone, g_activeSupportZones, 0.0001, 0))
+            {
+                PrintFormat("Created new support zone from breaking candle - Top=%.5f, Bottom=%.5f", 
+                           newZone.topBoundary, newZone.bottomBoundary);
+                DrawZoneLines(newZone, SUPPORT_ZONE_COLOR);
+            }
+            
             return true;
         }
         
