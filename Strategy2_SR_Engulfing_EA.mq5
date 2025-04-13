@@ -350,11 +350,26 @@ void CheckStrategy()
 //+------------------------------------------------------------------+
 //| Execute trade                                                     |
 //+------------------------------------------------------------------+
-void ExecuteTrade(bool isBuy, double price)
+void ExecuteTrade(bool isBuy, double price, double stopLoss = 0, double takeProfit = 0)
 {
-    double lotSize = 0.1;  // Fixed lot size for testing
-    double stopLoss = isBuy ? price - 50 * _Point : price + 50 * _Point;
-    double takeProfit = isBuy ? price + 100 * _Point : price - 100 * _Point;
+    // Get appropriate lot size based on account balance and risk management
+    double lotSize = GetLotSize();
+    if (lotSize <= 0)
+    {
+        Print("ExecuteTrade: Invalid lot size. Trade aborted.");
+        return;
+    }
+    
+    // If stopLoss and takeProfit weren't provided, use default values
+    if (stopLoss == 0)
+    {
+        stopLoss = isBuy ? price - 50 * _Point : price + 50 * _Point;
+    }
+    
+    if (takeProfit == 0)
+    {
+        takeProfit = isBuy ? price + 100 * _Point : price - 100 * _Point;
+    }
 
     MqlTradeRequest request = {};
     MqlTradeResult result = {};
@@ -370,8 +385,8 @@ void ExecuteTrade(bool isBuy, double price)
     request.magic = MAGIC_NUMBER;
     request.comment = "Engulfing Trade";
 
-    PrintFormat("ExecuteTrade: Sending %s order. Price=%.5f, SL=%.5f, TP=%.5f", 
-                isBuy ? "Buy" : "Sell", request.price, stopLoss, takeProfit);
+    PrintFormat("ExecuteTrade: Sending %s order. Price=%.5f, SL=%.5f, TP=%.5f, Lot=%.2f", 
+                isBuy ? "Buy" : "Sell", request.price, stopLoss, takeProfit, lotSize);
 
     if (!OrderSend(request, result))
     {
@@ -382,6 +397,7 @@ void ExecuteTrade(bool isBuy, double price)
     if (result.retcode == TRADE_RETCODE_DONE)
     {
         Print("ExecuteTrade: Trade executed successfully. Ticket: ", result.order);
+        g_lastTradeTime = TimeCurrent(); // Update last trade time
     }
     else
     {
@@ -546,41 +562,211 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivity)
 {
-    bool isBullish = false;
-    bool isEngulfing = false;
-
-    // Check for bullish engulfing
-    if (IsEngulfing(SHIFT_TO_CHECK, true, Use_Trend_Filter))
+    // Make sure we have enough data
+    if (ArraySize(rates) < SHIFT_TO_CHECK + 2)
     {
-        isBullish = true;
-        isEngulfing = true;
-        Print("CheckForEngulfingAndExecuteTrade: Bullish engulfing detected.");
-    }
-    // Check for bearish engulfing
-    else if (IsEngulfing(SHIFT_TO_CHECK, false, Use_Trend_Filter))
-    {
-        isBullish = false;
-        isEngulfing = true;
-        Print("CheckForEngulfingAndExecuteTrade: Bearish engulfing detected.");
-    }
-
-    if (!isEngulfing)
-    {
-        Print("CheckForEngulfingAndExecuteTrade: No engulfing pattern detected.");
+        Print("CheckForEngulfingAndExecuteTrade: Not enough candle data");
         return;
     }
-
-    double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
-
-    // Check if the engulfing candle is near an S/R zone
-    if (HasActiveZoneNearby(closePrice, sensitivity))
+    
+    // Get current and previous candle data
+    double currentOpen = rates[SHIFT_TO_CHECK].open;
+    double currentClose = rates[SHIFT_TO_CHECK].close;
+    double currentHigh = rates[SHIFT_TO_CHECK].high;
+    double currentLow = rates[SHIFT_TO_CHECK].low;
+    bool currentIsBullish = currentClose > currentOpen;
+    
+    double prevOpen = rates[SHIFT_TO_CHECK + 1].open;
+    double prevClose = rates[SHIFT_TO_CHECK + 1].close;
+    double prevHigh = rates[SHIFT_TO_CHECK + 1].high;
+    double prevLow = rates[SHIFT_TO_CHECK + 1].low;
+    bool prevIsBullish = prevClose > prevOpen;
+    
+    bool isBullishEngulfing = false;
+    bool isBearishEngulfing = false;
+    
+    // Check for bullish engulfing pattern
+    if (currentIsBullish && !prevIsBullish)  // Current is bullish, previous is bearish
     {
-        Print("CheckForEngulfingAndExecuteTrade: Engulfing candle detected near an S/R zone. Executing trade...");
-        ExecuteTrade(isBullish, closePrice);
+        // Check if current candle engulfs previous candle
+        if (currentOpen <= prevClose && currentClose >= prevOpen)
+        {
+            isBullishEngulfing = true;
+            PrintFormat("Bullish engulfing detected: Current (O=%.5f, C=%.5f) engulfs Previous (O=%.5f, C=%.5f)", 
+                        currentOpen, currentClose, prevOpen, prevClose);
+            
+            // Mark the pattern on chart regardless of trade execution
+            string patternName = "BullishEngulfing_" + TimeToString(rates[SHIFT_TO_CHECK].time);
+            ObjectCreate(0, patternName, OBJ_ARROW_UP, 0, rates[SHIFT_TO_CHECK].time, currentLow - (sensitivity * 5));
+            ObjectSetInteger(0, patternName, OBJPROP_COLOR, clrLime);
+            ObjectSetInteger(0, patternName, OBJPROP_WIDTH, 1);
+        }
     }
-    else
+    
+    // Check for bearish engulfing pattern
+    if (!currentIsBullish && prevIsBullish)  // Current is bearish, previous is bullish
     {
-        Print("CheckForEngulfingAndExecuteTrade: Engulfing candle detected but not near any S/R zone.");
+        // Check if current candle engulfs previous candle
+        if (currentOpen >= prevClose && currentClose <= prevOpen)
+        {
+            isBearishEngulfing = true;
+            PrintFormat("Bearish engulfing detected: Current (O=%.5f, C=%.5f) engulfs Previous (O=%.5f, C=%.5f)", 
+                        currentOpen, currentClose, prevOpen, prevClose);
+            
+            // Mark the pattern on chart regardless of trade execution
+            string patternName = "BearishEngulfing_" + TimeToString(rates[SHIFT_TO_CHECK].time);
+            ObjectCreate(0, patternName, OBJ_ARROW_DOWN, 0, rates[SHIFT_TO_CHECK].time, currentHigh + (sensitivity * 5));
+            ObjectSetInteger(0, patternName, OBJPROP_COLOR, clrRed);
+            ObjectSetInteger(0, patternName, OBJPROP_WIDTH, 1);
+        }
+    }
+    
+    // If no engulfing pattern detected, exit
+    if (!isBullishEngulfing && !isBearishEngulfing)
+    {
+        Print("CheckForEngulfingAndExecuteTrade: No engulfing pattern detected");
+        return;
+    }
+    
+    // Check cooldown before proceeding with trade execution
+    if (IsStrategyOnCooldown())
+    {
+        Print("CheckForEngulfingAndExecuteTrade: Strategy on cooldown, pattern marked but skipping trade execution");
+        return;
+    }
+    
+    // Apply trend filter if enabled
+    if (Use_Trend_Filter)
+    {
+        int trendState = GetTrendState();
+        
+        if (isBullishEngulfing && trendState != TREND_BULLISH)
+        {
+            PrintFormat("Bullish engulfing detected but trend filter not bullish (trend state: %d), pattern marked but skipping trade", trendState);
+            return;
+        }
+        
+        if (isBearishEngulfing && trendState != TREND_BEARISH)
+        {
+            PrintFormat("Bearish engulfing detected but trend filter not bearish (trend state: %d), pattern marked but skipping trade", trendState);
+            return;
+        }
+    }
+    
+    // Debug: Print all support zones to check if they exist
+    PrintFormat("Active support zones count: %d", ArraySize(g_activeSupportZones));
+    for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
+    {
+        PrintFormat("Support zone %d: [%.5f-%.5f]", i, g_activeSupportZones[i].bottomBoundary, g_activeSupportZones[i].topBoundary);
+    }
+    
+    // Debug: Print all resistance zones to check if they exist
+    PrintFormat("Active resistance zones count: %d", ArraySize(g_activeResistanceZones));
+    for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+    {
+        PrintFormat("Resistance zone %d: [%.5f-%.5f]", i, g_activeResistanceZones[i].bottomBoundary, g_activeResistanceZones[i].topBoundary);
+    }
+    
+    // Check if bullish engulfing is near support zone
+    if (isBullishEngulfing)
+    {
+        bool nearSupportZone = false;
+        double stopLoss = 0;
+        double takeProfit = 0;
+        
+        // Check if the engulfing pattern is near a support zone
+        for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
+        {
+            // Calculate distance to zone
+            double distanceToZone = MathAbs(currentLow - g_activeSupportZones[i].topBoundary);
+            PrintFormat("Bullish engulfing - Distance to support zone %d: %.5f (threshold: %.5f)", 
+                       i, distanceToZone, sensitivity * 5);
+            
+            // Check if the engulfing pattern is near the support zone
+            if (distanceToZone < sensitivity * 5)
+            {
+                PrintFormat("Bullish engulfing confirmed near support zone [%.5f-%.5f]", 
+                            g_activeSupportZones[i].bottomBoundary, g_activeSupportZones[i].topBoundary);
+                
+                nearSupportZone = true;
+                
+                // Set stop loss below support zone
+                stopLoss = g_activeSupportZones[i].bottomBoundary - (sensitivity * 2);
+                
+                // Set take profit with 1:2 risk-reward ratio
+                takeProfit = currentClose + ((currentClose - stopLoss) * 2);
+                
+                // Draw signal arrow on chart
+                string arrowName = "BuySignal_" + TimeToString(rates[SHIFT_TO_CHECK].time);
+                ObjectCreate(0, arrowName, OBJ_ARROW_BUY, 0, rates[SHIFT_TO_CHECK].time, currentLow - (sensitivity * 3));
+                ObjectSetInteger(0, arrowName, OBJPROP_COLOR, clrGreen);
+                ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 2);
+                
+                break;
+            }
+        }
+        
+        if (nearSupportZone)
+        {
+            PrintFormat("BUY SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f", currentClose, stopLoss, takeProfit);
+            ExecuteTrade(true, currentClose, stopLoss, takeProfit);
+            g_lastTradeTime = TimeCurrent();
+        }
+        else
+        {
+            Print("Bullish engulfing detected but not near any support zone");
+        }
+    }
+    
+    // Check if bearish engulfing is near resistance zone
+    if (isBearishEngulfing)
+    {
+        bool nearResistanceZone = false;
+        double stopLoss = 0;
+        double takeProfit = 0;
+        
+        // Check if the engulfing pattern is near a resistance zone
+        for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
+        {
+            // Calculate distance to zone
+            double distanceToZone = MathAbs(currentHigh - g_activeResistanceZones[i].bottomBoundary);
+            PrintFormat("Bearish engulfing - Distance to resistance zone %d: %.5f (threshold: %.5f)", 
+                       i, distanceToZone, sensitivity * 5);
+            
+            // Check if the engulfing pattern is near the resistance zone
+            if (distanceToZone < sensitivity * 5)
+            {
+                PrintFormat("Bearish engulfing confirmed near resistance zone [%.5f-%.5f]", 
+                            g_activeResistanceZones[i].bottomBoundary, g_activeResistanceZones[i].topBoundary);
+                
+                nearResistanceZone = true;
+                
+                // Set stop loss above resistance zone
+                stopLoss = g_activeResistanceZones[i].topBoundary + (sensitivity * 2);
+                
+                // Set take profit with 1:2 risk-reward ratio
+                takeProfit = currentClose - ((stopLoss - currentClose) * 2);
+                
+                // Draw signal arrow on chart
+                string arrowName = "SellSignal_" + TimeToString(rates[SHIFT_TO_CHECK].time);
+                ObjectCreate(0, arrowName, OBJ_ARROW_SELL, 0, rates[SHIFT_TO_CHECK].time, currentHigh + (sensitivity * 3));
+                ObjectSetInteger(0, arrowName, OBJPROP_COLOR, clrRed);
+                ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 2);
+                
+                break;
+            }
+        }
+        
+        if (nearResistanceZone)
+        {
+            PrintFormat("SELL SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f", currentClose, stopLoss, takeProfit);
+            ExecuteTrade(false, currentClose, stopLoss, takeProfit);
+            g_lastTradeTime = TimeCurrent();
+        }
+        else
+        {
+            Print("Bearish engulfing detected but not near any resistance zone");
+        }
     }
 }
 
