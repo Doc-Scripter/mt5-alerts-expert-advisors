@@ -192,6 +192,7 @@ void OnTick()
     if (!UpdateIndicators()) return;
     double currentEMA = g_ema.values[0];
 
+    // Update and draw support/resistance zones
     UpdateAndDrawValidSRZones(SR_Lookback, SR_Sensitivity_Pips, currentEMA);
 
     MqlRates rates[];
@@ -200,6 +201,7 @@ void OnTick()
 
     if (available > 0)
     {
+        // Check for engulfing patterns and execute trades
         CheckForEngulfingAndExecuteTrade(rates, SR_Sensitivity_Pips * _Point);
     }
 
@@ -253,98 +255,6 @@ bool UpdateIndicators()
    }
    
    return true;
-}
-
-//+------------------------------------------------------------------+
-//| Check strategy conditions                                         |
-//+------------------------------------------------------------------+
-void CheckStrategy()
-{
-   // Check cooldown
-   if(IsStrategyOnCooldown()) return;
-   
-   // Verify we have enough data
-   if(ArraySize(g_ema.values) <= SHIFT_TO_CHECK + 3)
-   {
-      Print("CheckStrategy: Insufficient EMA data");
-      return;
-   }
-   
-   double closePrice = iClose(_Symbol, PERIOD_CURRENT, SHIFT_TO_CHECK);
-   if(closePrice == 0)
-   {
-      Print("CheckStrategy: Invalid close price");
-      return;
-   }
-   
-   // Check bullish engulfing at support
-   bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true, Use_Trend_Filter);
-   if(isBullishEngulfing && g_nearestSupportZoneIndex != -1 && 
-      g_nearestSupportZoneIndex < ArraySize(g_activeSupportZones))
-   {
-      SRZone nearestSupport = g_activeSupportZones[g_nearestSupportZoneIndex];
-      
-      bool engulfingCloseInZone = (closePrice >= nearestSupport.bottomBoundary && 
-                                  closePrice <= nearestSupport.topBoundary);
-                                  
-      bool priceBelowEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3; i++)
-      {
-         double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(ArraySize(g_ema.values) > i && close < g_ema.values[i])
-         {
-            priceBelowEMARecently = true;
-            break;
-         }
-      }
-      
-      
-      if(engulfingCloseInZone && priceBelowEMARecently )
-      {
-         if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH)
-            return;
-            
-         double stopLoss = nearestSupport.bottomBoundary;
-         double takeProfit = closePrice + ((closePrice - stopLoss) * 1.5);
-         
-         ExecuteTrade(true, closePrice);
-         return;
-      }
-   }
-   
-   // Check bearish engulfing at resistance
-   bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false, Use_Trend_Filter);
-   if(isBearishEngulfing && g_nearestResistanceZoneIndex != -1 &&
-      g_nearestResistanceZoneIndex < ArraySize(g_activeResistanceZones))
-   {
-      SRZone nearestResistance = g_activeResistanceZones[g_nearestResistanceZoneIndex];
-      
-      bool engulfingCloseInZone = (closePrice >= nearestResistance.bottomBoundary && 
-                                  closePrice <= nearestResistance.topBoundary);
-                                  
-      bool priceAboveEMARecently = false;
-      for(int i = SHIFT_TO_CHECK + 1; i <= SHIFT_TO_CHECK + 3; i++)
-      {
-         double close = iClose(_Symbol, PERIOD_CURRENT, i);
-         if(ArraySize(g_ema.values) > i && close > g_ema.values[i])
-         {
-            priceAboveEMARecently = true;
-            break;
-         }
-      }
-      
-      
-      if(engulfingCloseInZone && priceAboveEMARecently )
-      {
-         if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
-            return;
-            
-         double stopLoss = nearestResistance.topBoundary;
-         double takeProfit = closePrice - ((stopLoss - closePrice) * 1.5);
-         
-         ExecuteTrade(false, closePrice);
-      }
-   }
 }
 
 //+------------------------------------------------------------------+
