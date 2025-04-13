@@ -32,7 +32,7 @@ input int         SR_Sensitivity_Pips = 3; // Min distance between S/R zone defi
 input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven (0=disabled)
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
 // Trend Filter Parameters
-input int         Trend_Confirmation_Periods = 2; // Periods needed to confirm trend change
+input int         Trend_Confirmation_Periods = 2; // Default periods needed to confirm trend change
 input bool        Debug_Mode = false;         // Enable detailed debug logging
 
 #include "include/CommonPatternDetection.mqh"
@@ -54,6 +54,7 @@ double trendFastEmaValues[];
 double trendSlowEmaValues[];
 double trendAdxValues[];
 double atrValues[];  // ATR values buffer
+int Dynamic_Trend_Confirmation_Periods; // Dynamic confirmation periods based on instrument
 
 // Constants
 #define STRATEGY_COOLDOWN_MINUTES 60
@@ -66,18 +67,44 @@ int OnInit()
 {
    // At the beginning of your OnInit() function
 if(_Symbol == "Volatility 75 Index")
+{
    ADX_Threshold = 35.0;
+   Dynamic_Trend_Confirmation_Periods = 3; // Higher confirmation for more volatile instrument
+}
 else if(_Symbol == "Volatility 25 Index")
+{
    ADX_Threshold = 23.0;
+   Dynamic_Trend_Confirmation_Periods = 2; // Default confirmation periods
+}
 else if(_Symbol == "Volatility 25 Index (1s)")
+{
    ADX_Threshold = 21.0;
+   Dynamic_Trend_Confirmation_Periods = 3; // Higher confirmation for 1-second timeframe
+}
 else if(_Symbol == "Volatility 50 Index")
+{
    ADX_Threshold = 25.0;
+   Dynamic_Trend_Confirmation_Periods = 2; // Default confirmation periods
+}
 else if(_Symbol == "Volatility 10 Index")
+{
    ADX_Threshold = 22.0;
+   Dynamic_Trend_Confirmation_Periods = 2; // Default confirmation periods
+}
 else if(_Symbol == "XAUUSD") // Gold
+{
    ADX_Threshold = 24.0;
-    Print("OnInit: Starting initialization...");
+   Dynamic_Trend_Confirmation_Periods = 2; // Default confirmation periods
+}
+else
+{
+   // For any other instrument, use the input parameter value
+   Dynamic_Trend_Confirmation_Periods = Trend_Confirmation_Periods;
+}
+
+Print("OnInit: Symbol=", _Symbol, ", ADX Threshold=", ADX_Threshold, 
+      ", Trend Confirmation Periods=", Dynamic_Trend_Confirmation_Periods);
+Print("OnInit: Starting initialization...");
 
 // Create ATR indicator handle
 atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
@@ -87,20 +114,36 @@ if(atrHandle == INVALID_HANDLE)
     return INIT_FAILED;
 }
 
-// Copy ATR values
-ArrayResize(atrValues, 1);
-if(CopyBuffer(atrHandle, 0, 0, 1, atrValues) < 1)
+// Wait for the indicator to calculate values
+bool atrValuesReady = false;
+for(int attempt = 0; attempt < 10; attempt++)
 {
-    Print("OnInit: Failed to copy ATR values");
-    return INIT_FAILED;
+    // Try to copy ATR values
+    ArrayResize(atrValues, 1);
+    if(CopyBuffer(atrHandle, 0, 0, 1, atrValues) == 1)
+    {
+        // Successfully copied ATR values
+        double atr = atrValues[0];
+        
+        // Only use dynamic threshold if it's valid
+        if(atr > 0)
+        {
+            double dynamicThreshold = MathMin(20.0 + (atr * multiplier), 40.0);
+            ADX_Threshold = dynamicThreshold;
+            atrValuesReady = true;
+            Print("OnInit: Dynamic ADX threshold calculated: ", ADX_Threshold);
+        }
+        
+        break; // Exit the loop if successful
+    }
+    
+    // If we couldn't copy values, wait a bit and try again
+    Sleep(100);
 }
 
-// Calculate dynamic ADX threshold based on volatility
-double atr = atrValues[0];
-double dynamicThreshold = MathMin(20.0 + (atr * multiplier), 40.0);
-ADX_Threshold = dynamicThreshold;
-
-Print("OnInit: Symbol=", _Symbol, ", ADX Threshold=", ADX_Threshold);
+// Even if we couldn't get ATR values, continue with the symbol-specific thresholds
+Print("OnInit: Symbol=", _Symbol, ", ADX Threshold=", ADX_Threshold, 
+      ", ATR values ready: ", (atrValuesReady ? "Yes" : "No"));
     
     // Request sufficient historical data first
     MqlRates rates[];
@@ -288,6 +331,34 @@ bool UpdateIndicators()
    
    Print("UpdateIndicators: Drawing EMA line");
    DrawEMALine();
+   
+   // Update ATR values
+   if(atrHandle != INVALID_HANDLE)
+   {
+      ArrayResize(atrValues, 1);
+      if(CopyBuffer(atrHandle, 0, 0, 1, atrValues) == 1)
+      {
+         double atr = atrValues[0];
+         if(atr > 0)
+         {
+            double dynamicThreshold = MathMin(20.0 + (atr * multiplier), 40.0);
+            ADX_Threshold = dynamicThreshold;
+            
+            if(Debug_Mode)
+               Print("UpdateIndicators: Updated ADX threshold to ", ADX_Threshold, " based on ATR ", atr);
+         }
+         else
+         {
+            if(Debug_Mode)
+               Print("UpdateIndicators: ATR value is zero or negative: ", atr);
+         }
+      }
+      else
+      {
+         if(Debug_Mode)
+            Print("UpdateIndicators: Failed to copy ATR values");
+      }
+   }
    
    if(Use_Trend_Filter)
    {
@@ -504,7 +575,7 @@ int GetTrendState()
    if(currentTrendState != lastTrendState)
    {
       // Potential new trend detected
-      if(confirmationCount < Trend_Confirmation_Periods)
+      if(confirmationCount < Dynamic_Trend_Confirmation_Periods) // Use dynamic periods instead of input parameter
       {
          // Not yet confirmed, increment counter
          confirmationCount++;
@@ -513,7 +584,7 @@ int GetTrendState()
             PrintFormat("GetTrendState: Potential trend change to %s detected. Confirmation: %d/%d", 
                       currentTrendState == TREND_BULLISH ? "BULLISH" : 
                       currentTrendState == TREND_BEARISH ? "BEARISH" : "RANGING",
-                      confirmationCount, Trend_Confirmation_Periods);
+                      confirmationCount, Dynamic_Trend_Confirmation_Periods);
          
          // Return the last confirmed trend until we have enough confirmation
          return lastTrendState;
