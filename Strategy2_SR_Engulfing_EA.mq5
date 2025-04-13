@@ -29,7 +29,6 @@ input bool        Use_Trend_Filter = false;   // Enable/Disable the main Trend F
 input ENUM_LOT_SIZING_MODE LotSizing_Mode = DYNAMIC_MARGIN_CHECK; // Lot sizing strategy
 input int         SR_Lookback = 20;    // Number of candles to look back for S/R zones
 input int         SR_Sensitivity_Pips = 3; // Min distance between S/R zone defining closes
-input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven (0=disabled)
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
 // Trend Filter Parameters
 input int         Trend_Confirmation_Periods = 2; // Default periods needed to confirm trend change
@@ -227,7 +226,7 @@ Print("OnInit: Symbol=", _Symbol, ", ADX Threshold=", ADX_Threshold,
    }
 
    // Set up timer for breakeven management if enabled
-if(Use_Breakeven_Logic && BreakevenTriggerPips > 0)
+if(Use_Breakeven_Logic)
 {
     EventSetTimer(60); // Check every minute
 }
@@ -628,7 +627,9 @@ int GetTrendState()
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   if(!Use_Breakeven_Logic || BreakevenTriggerPips <= 0) return;
+   if(!Use_Breakeven_Logic) return;
+   
+   bool modificationsPerformed = false;
    
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -641,16 +642,24 @@ void OnTimer()
          
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
       
+      // Skip if already at breakeven
       if(MathAbs(currentSL - openPrice) < _Point) continue;
       
       bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
       double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       
+      // Calculate risk in pips (distance from entry to stop loss)
+      double riskPips = isBuy ? (openPrice - currentSL) / _Point : 
+                               (currentSL - openPrice) / _Point;
+      
+      // Calculate current profit in pips
       double profitPips = isBuy ? (currentPrice - openPrice) / _Point :
                                  (openPrice - currentPrice) / _Point;
                                  
-      if(profitPips >= BreakevenTriggerPips)
+      // Move to breakeven when profit equals risk (1:1 risk-reward)
+      if(profitPips >= riskPips && riskPips > 0)
       {
          MqlTradeRequest request = {};
          MqlTradeResult result = {};
@@ -658,14 +667,32 @@ void OnTimer()
          request.action = TRADE_ACTION_SLTP;
          request.position = ticket;
          request.sl = openPrice;
-         request.tp = PositionGetDouble(POSITION_TP);
+         request.tp = currentTP; // Keep the same TP
          
-         if(!OrderSend(request, result))
-            Print("Failed to modify position to breakeven. Error: ", GetLastError());
+         if(OrderSend(request, result))
+         {
+            if(result.retcode == TRADE_RETCODE_DONE)
+            {
+               Print("OnTimer: Modified position #", ticket, " to breakeven at 1:1 risk-reward. Risk: ", 
+                     riskPips, " pips, Profit: ", profitPips, " pips");
+               modificationsPerformed = true;
+            }
+            else
+            {
+               Print("OnTimer: Failed to modify position to breakeven. Result code: ", result.retcode);
+            }
+         }
+         else
+         {
+            Print("OnTimer: Failed to send breakeven modification. Error: ", GetLastError());
+         }
       }
    }
+   
+   // If any modifications were performed, refresh the chart
+   if(modificationsPerformed)
+      ChartRedraw();
 }
-
 //+------------------------------------------------------------------+
 //| Check for engulfing pattern and execute trade                    |
 //+------------------------------------------------------------------+
