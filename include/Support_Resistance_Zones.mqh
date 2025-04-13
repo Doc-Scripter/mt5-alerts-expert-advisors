@@ -42,6 +42,12 @@ DrawnZone g_drawnZones[];
 // Add after the existing global variables
 bool g_isAboveEMA = false;  // Tracks if price is above EMA
 
+// Variables for engulfing pattern detection
+double g_highestBullishOpenNearResistance = 0;
+double g_highestBearishCloseNearResistance = 0;
+double g_lowestBullishCloseNearSupport = 0;
+double g_lowestBearishOpenNearSupport = 0;
+
 // Function implementations from Strategy2_SR_Engulfing_EA.mq5
 // Copy all functions exactly as they are but remove their definitions from the EA
 
@@ -205,16 +211,27 @@ void DrawZoneLines(const SRZone &zone, const color lineColor)
 void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double emaValue)
 {
     double currentPrice = rates[0].close;
+    
+    // Track highest and lowest points near zones for engulfing candle strategy
+    static double highestBullishOpenNearResistance = 0;
+    static double highestBearishCloseNearResistance = 0;
+    static double lowestBullishCloseNearSupport = 0;
+    static double lowestBearishOpenNearSupport = 0;
+    
+    // Reset tracking variables if needed
+    if (rates[0].time > TimeCurrent() - PeriodSeconds(PERIOD_CURRENT))
+    {
+        highestBullishOpenNearResistance = 0;
+        highestBearishCloseNearResistance = 0;
+        lowestBullishCloseNearSupport = 0;
+        lowestBearishOpenNearSupport = 0;
+    }
 
-    // Draw and validate resistance zones
+    // Draw resistance zones - always use red color for resistance (top boundary)
     for(int i = 0; i < ArraySize(g_activeResistanceZones); i++)
     {
-        // Draw zone lines
-        // Validate against current EMA before drawing
-        bool isValid = g_activeResistanceZones[i].bottomBoundary > emaValue && 
-                       g_activeResistanceZones[i].topBoundary > emaValue;
-        color zoneColor = isValid ? clrRed : clrGray;
-        DrawZoneLines(g_activeResistanceZones[i], zoneColor);
+        // Draw zone lines with red color for resistance
+        DrawZoneLines(g_activeResistanceZones[i], RESISTANCE_ZONE_COLOR);
 
         // Update nearest resistance
         if(g_activeResistanceZones[i].bottomBoundary > currentPrice)
@@ -225,17 +242,39 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
                 g_nearestResistanceZoneIndex = i;
             }
         }
+        
+        // Track highest bullish open and bearish close near resistance for engulfing pattern
+        double zoneProximity = sensitivity * 5; // Wider range for tracking
+        
+        // Check if current candle is near resistance zone
+        if (MathAbs(rates[0].high - g_activeResistanceZones[i].bottomBoundary) < zoneProximity)
+        {
+            // For bullish candles, track the open
+            if (rates[0].close > rates[0].open) // Bullish candle
+            {
+                if (rates[0].open > highestBullishOpenNearResistance)
+                {
+                    highestBullishOpenNearResistance = rates[0].open;
+                    Print("Updated highest bullish open near resistance: ", highestBullishOpenNearResistance);
+                }
+            }
+            // For bearish candles, track the close
+            else if (rates[0].close < rates[0].open) // Bearish candle
+            {
+                if (rates[0].close > highestBearishCloseNearResistance)
+                {
+                    highestBearishCloseNearResistance = rates[0].close;
+                    Print("Updated highest bearish close near resistance: ", highestBearishCloseNearResistance);
+                }
+            }
+        }
     }
 
-    // Draw and validate support zones
+    // Draw support zones - always use blue color for support (bottom boundary)
     for(int i = 0; i < ArraySize(g_activeSupportZones); i++)
     {
-        // Draw zone lines
-        // Validate against current EMA before drawing
-        bool isValid = g_activeSupportZones[i].topBoundary < emaValue && 
-                       g_activeSupportZones[i].bottomBoundary < emaValue;
-        color zoneColor = isValid ? clrGreen : clrGray;
-        DrawZoneLines(g_activeSupportZones[i], zoneColor);
+        // Draw zone lines with blue color for support
+        DrawZoneLines(g_activeSupportZones[i], SUPPORT_ZONE_COLOR);
 
         // Update nearest support
         if(g_activeSupportZones[i].topBoundary < currentPrice)
@@ -246,6 +285,41 @@ void DrawAndValidateZones(const MqlRates &rates[], double sensitivity, double em
                 g_nearestSupportZoneIndex = i;
             }
         }
+        
+        // Track lowest bullish close and bearish open near support for engulfing pattern
+        double zoneProximity = sensitivity * 5; // Wider range for tracking
+        
+        // Check if current candle is near support zone
+        if (MathAbs(rates[0].low - g_activeSupportZones[i].topBoundary) < zoneProximity)
+        {
+            // For bullish candles, track the close
+            if (rates[0].close > rates[0].open) // Bullish candle
+            {
+                if (lowestBullishCloseNearSupport == 0 || rates[0].close < lowestBullishCloseNearSupport)
+                {
+                    lowestBullishCloseNearSupport = rates[0].close;
+                    Print("Updated lowest bullish close near support: ", lowestBullishCloseNearSupport);
+                }
+            }
+            // For bearish candles, track the open
+            else if (rates[0].close < rates[0].open) // Bearish candle
+            {
+                if (lowestBearishOpenNearSupport == 0 || rates[0].open < lowestBearishOpenNearSupport)
+                {
+                    lowestBearishOpenNearSupport = rates[0].open;
+                    Print("Updated lowest bearish open near support: ", lowestBearishOpenNearSupport);
+                }
+            }
+        }
+    }
+    
+    // Log the tracking values for debugging
+    if (highestBullishOpenNearResistance > 0 || highestBearishCloseNearResistance > 0 ||
+        lowestBullishCloseNearSupport > 0 || lowestBearishOpenNearSupport > 0)
+    {
+        PrintFormat("Engulfing pattern tracking - Resistance: Bullish Open=%.5f, Bearish Close=%.5f | Support: Bullish Close=%.5f, Bearish Open=%.5f",
+                   highestBullishOpenNearResistance, highestBearishCloseNearResistance,
+                   lowestBullishCloseNearSupport, lowestBearishOpenNearSupport);
     }
 }
 //+------------------------------------------------------------------+
