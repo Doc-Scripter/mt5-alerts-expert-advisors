@@ -667,30 +667,38 @@ void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivit
         PrintFormat("Resistance zone %d: [%.5f-%.5f]", i, g_activeResistanceZones[i].bottomBoundary, g_activeResistanceZones[i].topBoundary);
     }
     
-    // Check if bullish engulfing is near support zone
+    // Check if bullish engulfing interacts with support zone
     if (isBullishEngulfing)
     {
-        bool nearSupportZone = false;
+        bool interactsWithSupportZone = false;
         double stopLoss = 0;
         double takeProfit = 0;
+        int zoneIndex = -1;
         
-        // Check if the engulfing pattern is near a support zone
+        // Check if the engulfing pattern interacts with a support zone
         for (int i = 0; i < ArraySize(g_activeSupportZones); i++)
         {
-            // Calculate distance to zone
-            double distanceToZone = MathAbs(currentLow - g_activeSupportZones[i].topBoundary);
-            PrintFormat("Bullish engulfing - Distance to support zone %d: %.5f (threshold: %.5f)", 
-                       i, distanceToZone, sensitivity * 5);
+            // Check if any part of the candle (body or wick) is within or touches the zone
+            bool bodyInZone = (currentOpen >= g_activeSupportZones[i].bottomBoundary && currentOpen <= g_activeSupportZones[i].topBoundary) ||
+                             (currentClose >= g_activeSupportZones[i].bottomBoundary && currentClose <= g_activeSupportZones[i].topBoundary);
+                             
+            bool wickInZone = (currentLow >= g_activeSupportZones[i].bottomBoundary && currentLow <= g_activeSupportZones[i].topBoundary) ||
+                             (currentHigh >= g_activeSupportZones[i].bottomBoundary && currentHigh <= g_activeSupportZones[i].topBoundary);
+                             
+            bool zoneWithinCandle = (g_activeSupportZones[i].bottomBoundary >= currentLow && g_activeSupportZones[i].topBoundary <= currentHigh);
             
-            // Check if the engulfing pattern is near the support zone
-            if (distanceToZone < sensitivity * 5)
+            PrintFormat("Bullish engulfing - Zone %d: Body in zone: %s, Wick in zone: %s, Zone within candle: %s", 
+                       i, bodyInZone ? "Yes" : "No", wickInZone ? "Yes" : "No", zoneWithinCandle ? "Yes" : "No");
+            
+            if (bodyInZone || wickInZone || zoneWithinCandle)
             {
-                PrintFormat("Bullish engulfing confirmed near support zone [%.5f-%.5f]", 
+                PrintFormat("Bullish engulfing confirmed interacting with support zone [%.5f-%.5f]", 
                             g_activeSupportZones[i].bottomBoundary, g_activeSupportZones[i].topBoundary);
                 
-                nearSupportZone = true;
+                interactsWithSupportZone = true;
+                zoneIndex = i;
                 
-                // Set stop loss below support zone
+                // Set stop loss below support zone with a small buffer
                 stopLoss = g_activeSupportZones[i].bottomBoundary - (sensitivity * 2);
                 
                 // Set take profit with 1:2 risk-reward ratio
@@ -706,42 +714,51 @@ void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivit
             }
         }
         
-        if (nearSupportZone)
+        if (interactsWithSupportZone)
         {
-            PrintFormat("BUY SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f", currentClose, stopLoss, takeProfit);
+            PrintFormat("BUY SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f, Zone Index=%d", 
+                       currentClose, stopLoss, takeProfit, zoneIndex);
             ExecuteTrade(true, currentClose, stopLoss, takeProfit);
             g_lastTradeTime = TimeCurrent();
         }
         else
         {
-            Print("Bullish engulfing detected but not near any support zone");
+            Print("Bullish engulfing detected but not interacting with any support zone");
         }
     }
     
-    // Check if bearish engulfing is near resistance zone
+    // Check if bearish engulfing interacts with resistance zone
     if (isBearishEngulfing)
     {
-        bool nearResistanceZone = false;
+        bool interactsWithResistanceZone = false;
         double stopLoss = 0;
         double takeProfit = 0;
+        int zoneIndex = -1;
         
-        // Check if the engulfing pattern is near a resistance zone
+        // Check if the engulfing pattern interacts with a resistance zone
         for (int i = 0; i < ArraySize(g_activeResistanceZones); i++)
         {
-            // Calculate distance to zone
-            double distanceToZone = MathAbs(currentHigh - g_activeResistanceZones[i].bottomBoundary);
-            PrintFormat("Bearish engulfing - Distance to resistance zone %d: %.5f (threshold: %.5f)", 
-                       i, distanceToZone, sensitivity * 5);
+            // Check if any part of the candle (body or wick) is within or touches the zone
+            bool bodyInZone = (currentOpen >= g_activeResistanceZones[i].bottomBoundary && currentOpen <= g_activeResistanceZones[i].topBoundary) ||
+                             (currentClose >= g_activeResistanceZones[i].bottomBoundary && currentClose <= g_activeResistanceZones[i].topBoundary);
+                             
+            bool wickInZone = (currentLow >= g_activeResistanceZones[i].bottomBoundary && currentLow <= g_activeResistanceZones[i].topBoundary) ||
+                             (currentHigh >= g_activeResistanceZones[i].bottomBoundary && currentHigh <= g_activeResistanceZones[i].topBoundary);
+                             
+            bool zoneWithinCandle = (g_activeResistanceZones[i].bottomBoundary >= currentLow && g_activeResistanceZones[i].topBoundary <= currentHigh);
             
-            // Check if the engulfing pattern is near the resistance zone
-            if (distanceToZone < sensitivity * 5)
+            PrintFormat("Bearish engulfing - Zone %d: Body in zone: %s, Wick in zone: %s, Zone within candle: %s", 
+                       i, bodyInZone ? "Yes" : "No", wickInZone ? "Yes" : "No", zoneWithinCandle ? "Yes" : "No");
+            
+            if (bodyInZone || wickInZone || zoneWithinCandle)
             {
-                PrintFormat("Bearish engulfing confirmed near resistance zone [%.5f-%.5f]", 
+                PrintFormat("Bearish engulfing confirmed interacting with resistance zone [%.5f-%.5f]", 
                             g_activeResistanceZones[i].bottomBoundary, g_activeResistanceZones[i].topBoundary);
                 
-                nearResistanceZone = true;
+                interactsWithResistanceZone = true;
+                zoneIndex = i;
                 
-                // Set stop loss above resistance zone
+                // Set stop loss above resistance zone with a small buffer
                 stopLoss = g_activeResistanceZones[i].topBoundary + (sensitivity * 2);
                 
                 // Set take profit with 1:2 risk-reward ratio
@@ -757,15 +774,16 @@ void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivit
             }
         }
         
-        if (nearResistanceZone)
+        if (interactsWithResistanceZone)
         {
-            PrintFormat("SELL SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f", currentClose, stopLoss, takeProfit);
+            PrintFormat("SELL SIGNAL generated: Entry=%.5f, SL=%.5f, TP=%.5f, Zone Index=%d", 
+                       currentClose, stopLoss, takeProfit, zoneIndex);
             ExecuteTrade(false, currentClose, stopLoss, takeProfit);
             g_lastTradeTime = TimeCurrent();
         }
         else
         {
-            Print("Bearish engulfing detected but not near any resistance zone");
+            Print("Bearish engulfing detected but not interacting with any resistance zone");
         }
     }
 }
