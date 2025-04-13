@@ -31,6 +31,9 @@ input int         SR_Lookback = 20;    // Number of candles to look back for S/R
 input int         SR_Sensitivity_Pips = 3; // Min distance between S/R zone defining closes
 input int         BreakevenTriggerPips = 0; // Pips in profit to trigger breakeven (0=disabled)
 input bool        Use_Breakeven_Logic = true; // Enable/Disable automatic breakeven adjustment
+// Trend Filter Parameters
+input int         Trend_Confirmation_Periods = 2; // Periods needed to confirm trend change
+input bool        Debug_Mode = false;         // Enable detailed debug logging
 
 #include "include/CommonPatternDetection.mqh"
 #include "include/Support_Resistance_Zones.mqh"
@@ -41,12 +44,16 @@ double volMin, volMax, volStep;
 datetime g_lastTradeTime = 0;
 
 // Trend Filter Handles & Buffers
+double ADX_Threshold = 25;  // ADX threshold for trend strength
+double multiplier = 0.5;  // Multiplier for ADX threshold based on volatility
 int trendFastEmaHandle;
 int trendSlowEmaHandle;
 int trendAdxHandle;
+int atrHandle;  // ATR indicator handle
 double trendFastEmaValues[];
 double trendSlowEmaValues[];
 double trendAdxValues[];
+double atrValues[];  // ATR values buffer
 
 // Constants
 #define STRATEGY_COOLDOWN_MINUTES 60
@@ -57,7 +64,43 @@ double trendAdxValues[];
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // At the beginning of your OnInit() function
+if(_Symbol == "Volatility 75 Index")
+   ADX_Threshold = 35.0;
+else if(_Symbol == "Volatility 25 Index")
+   ADX_Threshold = 23.0;
+else if(_Symbol == "Volatility 25 Index (1s)")
+   ADX_Threshold = 21.0;
+else if(_Symbol == "Volatility 50 Index")
+   ADX_Threshold = 25.0;
+else if(_Symbol == "Volatility 10 Index")
+   ADX_Threshold = 22.0;
+else if(_Symbol == "XAUUSD") // Gold
+   ADX_Threshold = 24.0;
     Print("OnInit: Starting initialization...");
+
+// Create ATR indicator handle
+atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+if(atrHandle == INVALID_HANDLE)
+{
+    Print("OnInit: Failed to create ATR indicator handle");
+    return INIT_FAILED;
+}
+
+// Copy ATR values
+ArrayResize(atrValues, 1);
+if(CopyBuffer(atrHandle, 0, 0, 1, atrValues) < 1)
+{
+    Print("OnInit: Failed to copy ATR values");
+    return INIT_FAILED;
+}
+
+// Calculate dynamic ADX threshold based on volatility
+double atr = atrValues[0];
+double dynamicThreshold = MathMin(20.0 + (atr * multiplier), 40.0);
+ADX_Threshold = dynamicThreshold;
+
+Print("OnInit: Symbol=", _Symbol, ", ADX Threshold=", ADX_Threshold);
     
     // Request sufficient historical data first
     MqlRates rates[];
@@ -134,8 +177,18 @@ int OnInit()
       }
       
       Print("OnInit: Successfully created trend filter indicators");
+      
+      // Initialize static variables for trend state tracking
+      if(Debug_Mode)
+         Print("OnInit: Initializing trend state tracking variables");
    }
-   
+
+   // Set up timer for breakeven management if enabled
+if(Use_Breakeven_Logic && BreakevenTriggerPips > 0)
+{
+    EventSetTimer(60); // Check every minute
+}
+
    return INIT_SUCCEEDED;  // Changed from return(INIT_SUCCEEDED)
 }
 
@@ -170,6 +223,13 @@ void OnDeinit(const int reason)
          trendAdxHandle = INVALID_HANDLE;
       }
    }
+
+   // In OnDeinit()
+if(atrHandle != INVALID_HANDLE)
+{
+    IndicatorRelease(atrHandle);
+    atrHandle = INVALID_HANDLE;
+}
    
    Print("OnDeinit: Cleaning up S/R zone lines...");
    DeleteAllSRZoneLines();
@@ -231,11 +291,13 @@ bool UpdateIndicators()
    
    if(Use_Trend_Filter)
    {
-      Print("UpdateIndicators: Updating trend filter indicators");
+      if(Debug_Mode)
+         Print("UpdateIndicators: Updating trend filter indicators");
       
       // Initialize trend filter arrays with proper size
       int requiredBars = SHIFT_TO_CHECK + 4;
-      Print("UpdateIndicators: Resizing trend arrays for ", requiredBars, " bars");
+      if(Debug_Mode)
+         Print("UpdateIndicators: Resizing trend arrays for ", requiredBars, " bars");
       
       ArrayResize(trendFastEmaValues, requiredBars);
       ArrayResize(trendSlowEmaValues, requiredBars);
@@ -377,11 +439,17 @@ bool IsStrategyOnCooldown()
 //+------------------------------------------------------------------+
 int GetTrendState()
 {
-   Print("GetTrendState: Checking trend state...");
+   static int lastTrendState = TREND_RANGING;  // Remember last trend state for confirmation
+   static int confirmationCount = 0;           // Counter for trend confirmation
+   
+   // Skip detailed logging unless in debug mode
+   if(Debug_Mode)
+      Print("GetTrendState: Checking trend state...");
    
    if(!Use_Trend_Filter)
    {
-      Print("GetTrendState: Trend filter disabled, returning RANGING");
+      if(Debug_Mode)
+         Print("GetTrendState: Trend filter disabled, returning RANGING");
       return TREND_RANGING;
    }
    
@@ -389,39 +457,99 @@ int GetTrendState()
    int slowSize = ArraySize(trendSlowEmaValues);
    int adxSize = ArraySize(trendAdxValues);
    
-   Print("GetTrendState: Array sizes - Fast EMA: ", fastSize,
-         ", Slow EMA: ", slowSize, ", ADX: ", adxSize);
+   if(Debug_Mode)
+      Print("GetTrendState: Array sizes - Fast EMA: ", fastSize,
+            ", Slow EMA: ", slowSize, ", ADX: ", adxSize);
    
-   if(fastSize == 0 || slowSize == 0 || adxSize == 0)
+   // Ensure we have enough data
+   if(fastSize < 2 || slowSize < 2 || adxSize < 2)
    {
-      Print("GetTrendState: Missing indicator data, returning RANGING");
+      Print("GetTrendState: Insufficient indicator data, returning RANGING");
       return TREND_RANGING;
    }
    
+   // Get current and previous values
    double fastEMA = trendFastEmaValues[0];
    double slowEMA = trendSlowEmaValues[0];
    double adxValue = trendAdxValues[0];
    
-   bool isStrong = (adxValue > 25.0);
+   double prevFastEMA = trendFastEmaValues[1];
+   double prevSlowEMA = trendSlowEmaValues[1];
+   
+   // Determine current trend conditions
+   bool isStrong = (adxValue > ADX_Threshold);
    bool isBullish = (fastEMA > slowEMA);
    
-   Print("GetTrendState: Values - Fast EMA: ", fastEMA,
-         ", Slow EMA: ", slowEMA, ", ADX: ", adxValue,
-         " (Strong: ", isStrong, ", Bullish: ", isBullish, ")");
+   // Check for crossover (change in trend direction)
+   bool isCrossover = (prevFastEMA <= prevSlowEMA && fastEMA > slowEMA) ||  // Bullish crossover
+                      (prevFastEMA >= prevSlowEMA && fastEMA < slowEMA);     // Bearish crossover
+   
+   if(Debug_Mode)
+      Print("GetTrendState: Values - Fast EMA: ", fastEMA,
+            ", Slow EMA: ", slowEMA, ", ADX: ", adxValue,
+            " (Strong: ", isStrong, ", Bullish: ", isBullish, 
+            ", Crossover: ", isCrossover, ")");
+   
+   // Determine current trend state
+   int currentTrendState;
    
    if(isStrong && isBullish)
-   {
-      Print("GetTrendState: Strong bullish trend detected");
-      return TREND_BULLISH;
-   }
-   if(isStrong && !isBullish)
-   {
-      Print("GetTrendState: Strong bearish trend detected");
-      return TREND_BEARISH;
-   }
+      currentTrendState = TREND_BULLISH;
+   else if(isStrong && !isBullish)
+      currentTrendState = TREND_BEARISH;
+   else
+      currentTrendState = TREND_RANGING;
    
-   Print("GetTrendState: No strong trend detected, returning RANGING");
-   return TREND_RANGING;
+   // Handle trend confirmation logic
+   if(currentTrendState != lastTrendState)
+   {
+      // Potential new trend detected
+      if(confirmationCount < Trend_Confirmation_Periods)
+      {
+         // Not yet confirmed, increment counter
+         confirmationCount++;
+         
+         if(Debug_Mode)
+            PrintFormat("GetTrendState: Potential trend change to %s detected. Confirmation: %d/%d", 
+                      currentTrendState == TREND_BULLISH ? "BULLISH" : 
+                      currentTrendState == TREND_BEARISH ? "BEARISH" : "RANGING",
+                      confirmationCount, Trend_Confirmation_Periods);
+         
+         // Return the last confirmed trend until we have enough confirmation
+         return lastTrendState;
+      }
+      else
+      {
+         // New trend confirmed
+         Print("GetTrendState: Trend changed from ", 
+               lastTrendState == TREND_BULLISH ? "BULLISH" : 
+               lastTrendState == TREND_BEARISH ? "BEARISH" : "RANGING",
+               " to ",
+               currentTrendState == TREND_BULLISH ? "BULLISH" : 
+               currentTrendState == TREND_BEARISH ? "BEARISH" : "RANGING");
+         
+         lastTrendState = currentTrendState;
+         confirmationCount = 0;
+         return currentTrendState;
+      }
+   }
+   else
+   {
+      // Same trend continues
+      confirmationCount = 0;
+      
+      if(Debug_Mode)
+      {
+         if(currentTrendState == TREND_BULLISH)
+            Print("GetTrendState: Strong bullish trend continues");
+         else if(currentTrendState == TREND_BEARISH)
+            Print("GetTrendState: Strong bearish trend continues");
+         else
+            Print("GetTrendState: No strong trend detected, remaining in RANGING state");
+      }
+      
+      return currentTrendState;
+   }
 }
 
 //+------------------------------------------------------------------+
