@@ -107,7 +107,7 @@ bool UpdateEMAValues(int requiredBars)
 //+------------------------------------------------------------------+
 //| Check for engulfing pattern                                       |
 //+------------------------------------------------------------------+
-bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
+bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false, int lookbackCandles = 1)
 {
     if (g_ema.handle == INVALID_HANDLE && useTrendFilter)
     {
@@ -115,46 +115,49 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
         return false;
     }
 
-    int priorIdx = shift + 1;
+    // Validate lookback parameter
+    lookbackCandles = MathMax(1, lookbackCandles); // Ensure at least 1 candle is checked
+    
+    int maxIdx = shift + lookbackCandles;
     int bars = Bars(_Symbol, PERIOD_CURRENT);
 
-    if (priorIdx >= bars)
+    if (maxIdx >= bars)
     {
-        Print("IsEngulfing: Not enough bars available. Required: ", priorIdx + 1, ", Available: ", bars);
+        Print("IsEngulfing: Not enough bars available. Required: ", maxIdx + 1, ", Available: ", bars);
         return false;
     }
 
+    // Current candle data
     double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift);
     double close1 = iClose(_Symbol, PERIOD_CURRENT, shift);
     double high1 = iHigh(_Symbol, PERIOD_CURRENT, shift);
     double low1 = iLow(_Symbol, PERIOD_CURRENT, shift);
 
-    double open2 = iOpen(_Symbol, PERIOD_CURRENT, priorIdx);
-    double close2 = iClose(_Symbol, PERIOD_CURRENT, priorIdx);
-    double high2 = iHigh(_Symbol, PERIOD_CURRENT, priorIdx);
-    double low2 = iLow(_Symbol, PERIOD_CURRENT, priorIdx);
-
     PrintFormat("IsEngulfing: Checking candle at shift %d: Open=%.5f, Close=%.5f, High=%.5f, Low=%.5f", 
                 shift, open1, close1, high1, low1);
-    PrintFormat("IsEngulfing: Previous candle at shift %d: Open=%.5f, Close=%.5f, High=%.5f, Low=%.5f", 
-                priorIdx, open2, close2, high2, low2);
 
+    // Determine current candle direction
+    bool currentIsBullish = (close1 > open1);
+    bool currentIsBearish = (close1 < open1);
+    
+    // Use a small tolerance relative to the price to avoid false signals due to tiny differences
     double tolerance = _Point;
 
-    bool trendOkBull = !useTrendFilter;
+    // Check trend filter if required
+    bool trendOkBull = !useTrendFilter; // Default to true if not using trend filter
     bool trendOkBear = !useTrendFilter;
 
     if (useTrendFilter)
     {
         // Make sure we have enough EMA values
-        if (ArraySize(g_ema.values) <= priorIdx)
+        if (ArraySize(g_ema.values) <= shift + 1)
         {
             Print("IsEngulfing: Not enough EMA values for trend filter");
             return false;
         }
         
         double maValue = g_ema.values[shift];
-        double maPrior = g_ema.values[priorIdx];
+        double maPrior = g_ema.values[shift + 1];
         
         // For bullish pattern, price should be above EMA or EMA should be rising
         trendOkBull = (close1 > maValue) || (maValue > maPrior);
@@ -166,41 +169,62 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
                    maValue, maPrior, trendOkBull ? "Yes" : "No", trendOkBear ? "Yes" : "No");
     }
 
-    if (bullish)
+    // Track which candles are engulfed
+    int engulfedCandles = 0;
+    string engulfedDetails = "";
+    
+    // Check each previous candle
+    for (int i = 1; i <= lookbackCandles; i++)
     {
-        bool priorIsBearish = (close2 < open2 - tolerance);
-        bool currentIsBullish = (close1 > open1 + tolerance);
+        int currentIdx = shift + i;
+        double prevOpen = iOpen(_Symbol, PERIOD_CURRENT, currentIdx);
+        double prevClose = iClose(_Symbol, PERIOD_CURRENT, currentIdx);
+        double prevHigh = iHigh(_Symbol, PERIOD_CURRENT, currentIdx);
+        double prevLow = iLow(_Symbol, PERIOD_CURRENT, currentIdx);
         
-        // Check for body engulfing
-        bool engulfsBody = (open1 <= close2 - tolerance) && (close1 >= open2 + tolerance);
+        PrintFormat("IsEngulfing: Checking previous candle at shift %d: Open=%.5f, Close=%.5f, High=%.5f, Low=%.5f", 
+                    currentIdx, prevOpen, prevClose, prevHigh, prevLow);
         
-        // Check for shadow engulfing
-        bool engulfsShadow = (low1 <= low2 - tolerance) && (high1 >= high2 + tolerance);
-
-        // Pattern is valid if either body OR shadow engulfs
-        if (priorIsBearish && currentIsBullish && (engulfsBody || engulfsShadow) && trendOkBull)
+        bool canEngulf = false;
+        
+        if (bullish)
         {
-            Print("IsEngulfing: Bullish engulfing pattern detected at shift ", shift);
-            DrawEngulfingPattern(shift, true);
-            return true;
+            bool prevIsBearish = (prevClose < prevOpen - tolerance);
+            bool currentIsBullishWithTolerance = (close1 > open1 + tolerance);
+            
+            // Check for body engulfing
+            bool engulfsBody = (open1 <= prevClose - tolerance) && (close1 >= prevOpen + tolerance);
+            
+            // Check for shadow engulfing
+            bool engulfsShadow = (low1 <= prevLow - tolerance) && (high1 >= prevHigh + tolerance);
+
+            // Pattern is valid if either body OR shadow engulfs
+            canEngulf = prevIsBearish && currentIsBullishWithTolerance && (engulfsBody || engulfsShadow) && trendOkBull;
         }
-    }
-    else
-    {
-        bool priorIsBullish = (close2 > open2 + tolerance);
-        bool currentIsBearish = (close1 < open1 - tolerance);
-        
-        // Check for body engulfing
-        bool engulfsBody = (open1 >= close2 + tolerance) && (close1 <= open2 - tolerance);
-        
-        // Check for shadow engulfing
-        bool engulfsShadow = (low1 <= low2 - tolerance) && (high1 >= high2 + tolerance);
-
-        // Pattern is valid if either body OR shadow engulfs
-        if (priorIsBullish && currentIsBearish && (engulfsBody || engulfsShadow) && trendOkBear)
+        else
         {
-            Print("IsEngulfing: Bearish engulfing pattern detected at shift ", shift);
-            DrawEngulfingPattern(shift, false);
+            bool prevIsBullish = (prevClose > prevOpen + tolerance);
+            bool currentIsBearishWithTolerance = (close1 < open1 - tolerance);
+            
+            // Check for body engulfing
+            bool engulfsBody = (open1 >= prevClose + tolerance) && (close1 <= prevOpen - tolerance);
+            
+            // Check for shadow engulfing
+            bool engulfsShadow = (low1 <= prevLow - tolerance) && (high1 >= prevHigh + tolerance);
+
+            // Pattern is valid if either body OR shadow engulfs
+            canEngulf = prevIsBullish && currentIsBearishWithTolerance && (engulfsBody || engulfsShadow) && trendOkBear;
+        }
+        
+        if (canEngulf)
+        {
+            engulfedCandles++;
+            engulfedDetails += " Candle at shift " + IntegerToString(currentIdx) + " is engulfed.";
+            
+            // If we only need one engulfed candle, we can return immediately
+            Print("IsEngulfing: ", (bullish ? "Bullish" : "Bearish"), " engulfing pattern detected at shift ", shift, 
+                  ". Engulfed candle at shift ", currentIdx);
+            DrawEngulfingPattern(shift, bullish);
             return true;
         }
     }
