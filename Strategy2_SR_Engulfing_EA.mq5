@@ -303,14 +303,13 @@ void OnTick()
 
     if (available > 0)
     {
-        // Check for engulfing patterns and execute trades
-        CheckForEngulfingAndExecuteTrade(rates, SR_Sensitivity_Pips * _Point);
+        // Check for engulfing patterns and execute trades using the new function
+        CheckForEngulfingAndTrade(rates, SR_Sensitivity_Pips * _Point);
     }
 
     // Log the current state of zones
     LogZoneState();
 }
-
 //+------------------------------------------------------------------+
 //| Update indicator values                                           |
 //+------------------------------------------------------------------+
@@ -693,81 +692,40 @@ void OnTimer()
    if(modificationsPerformed)
       ChartRedraw();
 }
+
 //+------------------------------------------------------------------+
 //| Check for engulfing pattern and execute trade                    |
 //+------------------------------------------------------------------+
-void CheckForEngulfingAndExecuteTrade(const MqlRates &rates[], double sensitivity)
+void CheckForEngulfingAndTrade(const MqlRates &rates[], double sensitivity)
 {
     // Make sure we have enough data
     if (ArraySize(rates) < SHIFT_TO_CHECK + 2)
     {
-        Print("CheckForEngulfingAndExecuteTrade: Not enough candle data");
+        Print("CheckForEngulfingAndTrade: Not enough candle data");
         return;
     }
     
-    // Get current and previous candle data
+    // Get current candle data for later use in trade execution
     double currentOpen = rates[SHIFT_TO_CHECK].open;
     double currentClose = rates[SHIFT_TO_CHECK].close;
     double currentHigh = rates[SHIFT_TO_CHECK].high;
     double currentLow = rates[SHIFT_TO_CHECK].low;
-    bool currentIsBullish = currentClose > currentOpen;
     
-    double prevOpen = rates[SHIFT_TO_CHECK + 1].open;
-    double prevClose = rates[SHIFT_TO_CHECK + 1].close;
-    double prevHigh = rates[SHIFT_TO_CHECK + 1].high;
-    double prevLow = rates[SHIFT_TO_CHECK + 1].low;
-    bool prevIsBullish = prevClose > prevOpen;
-    
-    bool isBullishEngulfing = false;
-    bool isBearishEngulfing = false;
-    
-    // Check for bullish engulfing pattern
-    if (currentIsBullish && !prevIsBullish)  // Current is bullish, previous is bearish
-    {
-        // Check if current candle engulfs previous candle
-        if (currentOpen <= prevClose && currentClose >= prevOpen)
-        {
-            isBullishEngulfing = true;
-            PrintFormat("Bullish engulfing detected: Current (O=%.5f, C=%.5f) engulfs Previous (O=%.5f, C=%.5f)", 
-                        currentOpen, currentClose, prevOpen, prevClose);
-            
-            // Mark the pattern on chart regardless of trade execution
-            string patternName = "BullishEngulfing_" + TimeToString(rates[SHIFT_TO_CHECK].time);
-            ObjectCreate(0, patternName, OBJ_ARROW_UP, 0, rates[SHIFT_TO_CHECK].time, currentLow - (sensitivity * 5));
-            ObjectSetInteger(0, patternName, OBJPROP_COLOR, clrLime);
-            ObjectSetInteger(0, patternName, OBJPROP_WIDTH, 1);
-        }
-    }
-    
-    // Check for bearish engulfing pattern
-    if (!currentIsBullish && prevIsBullish)  // Current is bearish, previous is bullish
-    {
-        // Check if current candle engulfs previous candle
-        if (currentOpen >= prevClose && currentClose <= prevOpen)
-        {
-            isBearishEngulfing = true;
-            PrintFormat("Bearish engulfing detected: Current (O=%.5f, C=%.5f) engulfs Previous (O=%.5f, C=%.5f)", 
-                        currentOpen, currentClose, prevOpen, prevClose);
-            
-            // Mark the pattern on chart regardless of trade execution
-            string patternName = "BearishEngulfing_" + TimeToString(rates[SHIFT_TO_CHECK].time);
-            ObjectCreate(0, patternName, OBJ_ARROW_DOWN, 0, rates[SHIFT_TO_CHECK].time, currentHigh + (sensitivity * 5));
-            ObjectSetInteger(0, patternName, OBJPROP_COLOR, clrRed);
-            ObjectSetInteger(0, patternName, OBJPROP_WIDTH, 1);
-        }
-    }
+    // Check for bullish and bearish engulfing patterns using IsEngulfing function
+    bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true, false);  // Don't use trend filter here, we'll apply it separately
+    bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false, false); // Don't use trend filter here, we'll apply it separately
     
     // If no engulfing pattern detected, exit
     if (!isBullishEngulfing && !isBearishEngulfing)
     {
-        Print("CheckForEngulfingAndExecuteTrade: No engulfing pattern detected");
+        Print("CheckForEngulfingAndTrade: No engulfing pattern detected");
         return;
     }
     
     // Check cooldown before proceeding with trade execution
     if (IsStrategyOnCooldown())
     {
-        Print("CheckForEngulfingAndExecuteTrade: Strategy on cooldown, pattern marked but skipping trade execution");
+        Print("CheckForEngulfingAndTrade: Strategy on cooldown, pattern marked but skipping trade execution");
         return;
     }
     

@@ -109,18 +109,18 @@ bool UpdateEMAValues(int requiredBars)
 //+------------------------------------------------------------------+
 bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
 {
-    if (g_ema.handle == INVALID_HANDLE)
+    if (g_ema.handle == INVALID_HANDLE && useTrendFilter)
     {
-        Print("IsEngulfing: Invalid EMA handle");
+        Print("IsEngulfing: Invalid EMA handle for trend filter");
         return false;
     }
 
     int priorIdx = shift + 1;
-    int bars = ArraySize(g_ema.values);
+    int bars = Bars(_Symbol, PERIOD_CURRENT);
 
     if (priorIdx >= bars)
     {
-        Print("IsEngulfing: Not enough bars in array. Required: ", priorIdx + 1, ", Available: ", bars);
+        Print("IsEngulfing: Not enough bars available. Required: ", priorIdx + 1, ", Available: ", bars);
         return false;
     }
 
@@ -146,19 +146,39 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
 
     if (useTrendFilter)
     {
+        // Make sure we have enough EMA values
+        if (ArraySize(g_ema.values) <= priorIdx)
+        {
+            Print("IsEngulfing: Not enough EMA values for trend filter");
+            return false;
+        }
+        
+        double maValue = g_ema.values[shift];
         double maPrior = g_ema.values[priorIdx];
-        trendOkBull = close1 > maPrior;
-        trendOkBear = close1 < maPrior;
+        
+        // For bullish pattern, price should be above EMA or EMA should be rising
+        trendOkBull = (close1 > maValue) || (maValue > maPrior);
+        
+        // For bearish pattern, price should be below EMA or EMA should be falling
+        trendOkBear = (close1 < maValue) || (maValue < maPrior);
+        
+        PrintFormat("IsEngulfing: Trend filter - EMA(current)=%.5f, EMA(prior)=%.5f, Bull OK=%s, Bear OK=%s", 
+                   maValue, maPrior, trendOkBull ? "Yes" : "No", trendOkBear ? "Yes" : "No");
     }
 
     if (bullish)
     {
         bool priorIsBearish = (close2 < open2 - tolerance);
         bool currentIsBullish = (close1 > open1 + tolerance);
+        
+        // Check for body engulfing
         bool engulfsBody = (open1 <= close2 - tolerance) && (close1 >= open2 + tolerance);
+        
+        // Check for shadow engulfing
         bool engulfsShadow = (low1 <= low2 - tolerance) && (high1 >= high2 + tolerance);
 
-        if (priorIsBearish && currentIsBullish && engulfsBody && engulfsShadow && trendOkBull)
+        // Pattern is valid if either body OR shadow engulfs
+        if (priorIsBearish && currentIsBullish && (engulfsBody || engulfsShadow) && trendOkBull)
         {
             Print("IsEngulfing: Bullish engulfing pattern detected at shift ", shift);
             DrawEngulfingPattern(shift, true);
@@ -169,10 +189,15 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false)
     {
         bool priorIsBullish = (close2 > open2 + tolerance);
         bool currentIsBearish = (close1 < open1 - tolerance);
+        
+        // Check for body engulfing
         bool engulfsBody = (open1 >= close2 + tolerance) && (close1 <= open2 - tolerance);
+        
+        // Check for shadow engulfing
         bool engulfsShadow = (low1 <= low2 - tolerance) && (high1 >= high2 + tolerance);
 
-        if (priorIsBullish && currentIsBearish && engulfsBody && engulfsShadow && trendOkBear)
+        // Pattern is valid if either body OR shadow engulfs
+        if (priorIsBullish && currentIsBearish && (engulfsBody || engulfsShadow) && trendOkBear)
         {
             Print("IsEngulfing: Bearish engulfing pattern detected at shift ", shift);
             DrawEngulfingPattern(shift, false);
