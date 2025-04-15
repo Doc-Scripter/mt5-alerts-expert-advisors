@@ -699,7 +699,7 @@ void OnTimer()
 void CheckForEngulfingAndTrade(const MqlRates &rates[], double sensitivity)
 {
     // Make sure we have enough data
-    if (ArraySize(rates) < SHIFT_TO_CHECK + 51) // Changed from +2 to +101 to accommodate 100 candle lookback
+    if (ArraySize(rates) < SHIFT_TO_CHECK + 10) // Changed from +2 to +101 to accommodate 100 candle lookback
     {
         Print("CheckForEngulfingAndTrade: Not enough candle data for 100 candle lookback. Need at least ", 
               SHIFT_TO_CHECK + 101, " candles, but only have ", ArraySize(rates));
