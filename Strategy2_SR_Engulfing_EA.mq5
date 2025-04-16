@@ -699,10 +699,10 @@ void OnTimer()
 void CheckForEngulfingAndTrade(const MqlRates &rates[], double sensitivity)
 {
     // Make sure we have enough data
-    if (ArraySize(rates) < SHIFT_TO_CHECK + 10) // Changed from +2 to +101 to accommodate 100 candle lookback
+    if (ArraySize(rates) < SHIFT_TO_CHECK + 10) //  to accommodate 10 candle lookback
     {
-        Print("CheckForEngulfingAndTrade: Not enough candle data for 100 candle lookback. Need at least ", 
-              SHIFT_TO_CHECK + 101, " candles, but only have ", ArraySize(rates));
+        Print("CheckForEngulfingAndTrade: Not enough candle data for 10 candle lookback. Need at least ", 
+              SHIFT_TO_CHECK + 10, " candles, but only have ", ArraySize(rates));
         return;
     }
     
@@ -713,14 +713,14 @@ void CheckForEngulfingAndTrade(const MqlRates &rates[], double sensitivity)
     double currentLow = rates[SHIFT_TO_CHECK].low;
     
     // Check for bullish and bearish engulfing patterns using IsEngulfing function
-    // Modified to use 100 candle lookback instead of just the previous candle
+    // Modified to use 10 candle lookback instead of just the previous candle
     bool isBullishEngulfing = IsEngulfing(SHIFT_TO_CHECK, true, false, 10);  // Added lookback parameter of 100
     bool isBearishEngulfing = IsEngulfing(SHIFT_TO_CHECK, false, false, 10); // Added lookback parameter of 100
     
     // If no engulfing pattern detected, exit
     if (!isBullishEngulfing && !isBearishEngulfing)
     {
-        Print("CheckForEngulfingAndTrade: No engulfing pattern detected within 100 candle lookback");
+        Print("CheckForEngulfingAndTrade: No engulfing pattern detected within 10 candle lookback");
         return;
     }
     
@@ -730,7 +730,7 @@ void CheckForEngulfingAndTrade(const MqlRates &rates[], double sensitivity)
         Print("CheckForEngulfingAndTrade: Strategy on cooldown, pattern marked but skipping trade execution");
         return;
     }
-    
+
     // Apply trend filter if enabled
     if (Use_Trend_Filter)
     {

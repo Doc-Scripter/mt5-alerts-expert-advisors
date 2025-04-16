@@ -107,7 +107,7 @@ bool UpdateEMAValues(int requiredBars)
 //+------------------------------------------------------------------+
 //| Check for engulfing pattern                                       |
 //+------------------------------------------------------------------+
-bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false, int lookbackCandles = 1)
+bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookbackCandles = 10)
 {
     if (g_ema.handle == INVALID_HANDLE && useTrendFilter)
     {
@@ -169,6 +169,45 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false, int lookb
                    maValue, maPrior, trendOkBull ? "Yes" : "No", trendOkBear ? "Yes" : "No");
     }
 
+    // Calculate average candle sizes from previous candles
+    double totalBodySize = 0;
+    double totalCandleSize = 0;
+    
+    for (int i = 1; i <= lookbackCandles; i++)
+    {
+        int idx = shift + i;
+        double prevOpen = iOpen(_Symbol, PERIOD_CURRENT, idx);
+        double prevClose = iClose(_Symbol, PERIOD_CURRENT, idx);
+        double prevHigh = iHigh(_Symbol, PERIOD_CURRENT, idx);
+        double prevLow = iLow(_Symbol, PERIOD_CURRENT, idx);
+        
+        double bodySize = MathAbs(prevClose - prevOpen);
+        double candleSize = prevHigh - prevLow;
+        
+        totalBodySize += bodySize;
+        totalCandleSize += candleSize;
+    }
+    
+    double avgBodySize = totalBodySize / lookbackCandles;
+    double avgCandleSize = totalCandleSize / lookbackCandles;
+    
+    // Calculate current candle sizes
+    double currentBodySize = MathAbs(close1 - open1);
+    double currentCandleSize = high1 - low1;
+    
+    // Check if current candle is at least 30% larger than average
+    bool isSizeSignificant = (currentBodySize >= avgBodySize * 1.3) || 
+                             (currentCandleSize >= avgCandleSize * 1.3);
+    
+    PrintFormat("IsEngulfing: Size analysis - Avg Body=%.5f, Current Body=%.5f, Avg Candle=%.5f, Current Candle=%.5f, Significant=%s", 
+               avgBodySize, currentBodySize, avgCandleSize, currentCandleSize, isSizeSignificant ? "Yes" : "No");
+    
+    if (!isSizeSignificant)
+    {
+        Print("IsEngulfing: Candle size not significant enough (30% larger than average required)");
+        return false;
+    }
+
     // Track which candles are engulfed
     int engulfedCandles = 0;
     string engulfedDetails = "";
@@ -223,7 +262,7 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = false, int lookb
             
             // If we only need one engulfed candle, we can return immediately
             Print("IsEngulfing: ", (bullish ? "Bullish" : "Bearish"), " engulfing pattern detected at shift ", shift, 
-                  ". Engulfed candle at shift ", currentIdx);
+                  ". Engulfed candle at shift ", currentIdx, ". Size is significant (>30% larger than average)");
             DrawEngulfingPattern(shift, bullish);
             return true;
         }
