@@ -100,35 +100,37 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Check for new bar
+   // Check for new bar by comparing current bar count with previous count
    int currentBars = Bars(_Symbol, PERIOD_CURRENT);
    
-   // Only manage trailing stop on tick updates (not on new bars)
+   // If no new bar formed, only manage trailing stops and exit
    if(currentBars == barCount) 
    {
       ManageTrailingStop();
       return;
    }
    
+   // Update bar count as we have a new bar
    barCount = currentBars;
    
-   // For 30-minute timeframe optimization, check if we're on the correct timeframe
-   if(Period() != PERIOD_M30 && Period() != PERIOD_CURRENT)
+   // Verify we're using the optimal timeframe for this strategy
+   if(Period() != OPTIMAL_TIMEFRAME)
    {
-      Print("Warning: EA is optimized for 30-minute timeframe. Current timeframe: ", EnumToString(Period()));
+      Print("WARNING: This EA is optimized for 30-minute timeframe. Current timeframe: ", 
+            EnumToString(Period()), ". Performance may be suboptimal.");
    }
    
-   // Update indicators
+   // Update all technical indicators for the new bar
    if(!UpdateIndicators()) 
    {
       Print("Failed to update indicators, skipping this bar");
       return;
    }
    
-   // Check strategy conditions
+   // Evaluate entry/exit conditions based on the strategy rules
    CheckStrategy();
    
-   // Log completion of bar processing
+   // Log successful completion of bar processing
    Print("Processed new bar at: ", TimeToString(TimeCurrent()));
 }
 
@@ -210,15 +212,15 @@ void CheckStrategy()
       double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       
+      // Execute trade with appropriate lot multiplier
+      // SL/TP will be calculated inside ExecuteTrade using ValidateStopLevel
       if(isBuy)
       {
-         // Execute buy trade with broker minimum SL/TP
-         ExecuteTrade(true, 0, 0, lotMultiplier);
+         ExecuteTrade(true, lotMultiplier);
       }
       else
       {
-         // Execute sell trade with broker minimum SL/TP
-         ExecuteTrade(false, 0, 0, lotMultiplier);
+         ExecuteTrade(false, lotMultiplier);
       }
    }
 }
@@ -279,7 +281,7 @@ int DetermineTrend()
 //+------------------------------------------------------------------+
 //| Execute trade                                                     |
 //+------------------------------------------------------------------+
-void ExecuteTrade(bool isBuy, double dummyStopLoss, double dummyTakeProfit, double lotMultiplier = 1.0)
+void ExecuteTrade(bool isBuy, double lotMultiplier = 1.0)
 {
    double baseLotSize = GetLotSize();
    if(baseLotSize <= 0) return;
@@ -295,16 +297,17 @@ void ExecuteTrade(bool isBuy, double dummyStopLoss, double dummyTakeProfit, doub
    lotSize = MathRound(lotSize / volStep) * volStep;
    
    // Get current price
-   double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double entryPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
    // Always set SL/TP at broker minimum distance from current price
-   double validatedStopLoss = ValidateStopLevel(currentPrice, isBuy, true);
+   double stopLoss = ValidateStopLevel(0, isBuy, true);
    
    // Validate and adjust take profit (always uses broker minimum distance)
-   double validatedTakeProfit = 0;
+   double takeProfit = 0;
    if(!DisableTP)
-      validatedTakeProfit = ValidateStopLevel(currentPrice, isBuy, false);
+      takeProfit = ValidateStopLevel(0, isBuy, false);
    
+   // Prepare trade request
    MqlTradeRequest request = {};
    MqlTradeResult result = {};
    
@@ -312,9 +315,9 @@ void ExecuteTrade(bool isBuy, double dummyStopLoss, double dummyTakeProfit, doub
    request.symbol = _Symbol;
    request.volume = lotSize;
    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   request.price = currentPrice;
-   request.sl = validatedStopLoss;
-   if(!DisableTP) request.tp = validatedTakeProfit;
+   request.price = entryPrice;
+   request.sl = stopLoss;
+   if(!DisableTP) request.tp = takeProfit;
    request.deviation = 10;
    request.magic = MAGIC_NUMBER;
    request.comment = "Strategy 5 " + (isBuy ? "Buy" : "Sell") + " Trend: " + 
@@ -328,12 +331,14 @@ void ExecuteTrade(bool isBuy, double dummyStopLoss, double dummyTakeProfit, doub
          ", TP: ", request.tp,
          ", Lot: ", lotSize);
    
+   // Send the order
    if(!OrderSend(request, result))
    {
       Print("OrderSend failed with error: ", GetLastError());
       return;
    }
    
+   // Log successful trade
    if(result.retcode == TRADE_RETCODE_DONE)
    {
       Print("Trade executed successfully. Ticket: ", result.order, 
@@ -346,43 +351,60 @@ void ExecuteTrade(bool isBuy, double dummyStopLoss, double dummyTakeProfit, doub
 //+------------------------------------------------------------------+
 //| Validate and set stop level at broker minimum                     |
 //+------------------------------------------------------------------+
-double ValidateStopLevel(double price, bool isBuy, bool isStopLoss)
+double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss)
 {
-   // Get minimum stop level in points
-   long minStopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDistance = minStopLevel * _Point;
-   
-   // For indices and other instruments with large point values, ensure minimum distance
-   if(minDistance < 1.0)
-      minDistance = 10 * _Point; // Use at least 10 points as minimum distance
-   
-   if(isBuy)
+   // 1) Broker min‑stop in *points*
+   long stopPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double point    = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minDist  = stopPoints * point;              // in price terms
+   double tick     = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   // Never allow below one tick
+   if(minDist < tick) 
+      minDist = tick;
+
+   // 2) Use provided price or get current market price
+   double entry = currentPrice > 0 ? currentPrice : 
+                  (isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) 
+                         : SymbolInfoDouble(_Symbol, SYMBOL_BID));
+
+   // 3) Compute raw stop level
+   double raw = 0;
+   if(isStopLoss)
+      raw = isBuy ? (entry - minDist)    // buy SL = ask − minDist
+                  : (entry + minDist);   // sell SL = bid + minDist
+   else  // take‑profit
+      raw = isBuy ? (entry + minDist)
+                  : (entry - minDist);
+
+   // 4) Round *away* from the entry so we never violate min‑distance
+   double normalized;
+   if(isStopLoss)
    {
-      if(isStopLoss)
-      {
-         // For buy orders, stop loss must be below current price
-         return price - minDistance;
-      }
-      else
-      {
-         // For buy orders, take profit must be above current price
-         return price + minDistance;
-      }
+      // for SL, you want the price even *further* away
+      normalized = isBuy 
+                   ? MathFloor(raw / tick) * tick 
+                   : MathCeil (raw / tick) * tick;
    }
    else
    {
-      if(isStopLoss)
-      {
-         // For sell orders, stop loss must be above current price
-         return price + minDistance;
-      }
-      else
-      {
-         // For sell orders, take profit must be below current price
-         return price - minDistance;
-      }
+      // for TP, same logic: push the TP even further
+      normalized = isBuy 
+                   ? MathCeil (raw / tick) * tick 
+                   : MathFloor(raw / tick) * tick;
    }
+   normalized = NormalizeDouble(normalized, digits);
+
+   PrintFormat(
+     "ValidateStopLevel: entry=%.5f, isBuy=%d, isSL=%d → raw=%.5f, final=%.5f",
+     entry, isBuy, isStopLoss, raw, normalized
+   );
+
+   return normalized;
 }
+
+
 
 //+------------------------------------------------------------------+
 //| Get appropriate lot size based on mode and margin                 |
@@ -455,8 +477,7 @@ void ManageTrailingStop()
       if(profitPips >= Trail_Activation_Pips)
       {
          // Set new SL at broker minimum distance from current price (always uses broker minimum)
-         double newSL = ValidateStopLevel(currentPrice, isBuy, true);
-         double minStopDistance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+         double newSL = ValidateStopLevel(currentPrice, isBuy, true);  // FIXED: Added currentPrice parameter
          bool modifyNeeded = false;
          
          if(isBuy)
@@ -490,8 +511,7 @@ void ManageTrailingStop()
                Print("Attempting to modify SL for ticket ", ticket,
                      ", Current price: ", currentPrice,
                      ", New SL: ", newSL,
-                     ", Current SL: ", currentSL,
-                     ", Min distance: ", minStopDistance);
+                     ", Current SL: ", currentSL);
                
                modifySuccess = OrderSend(request, result);
                
