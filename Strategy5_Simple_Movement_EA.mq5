@@ -21,7 +21,6 @@
 
 // Trend Multipliers for 30-Minute Strategy
 input double With_Trend_Multiplier = 1.5;    // Lot multiplier for with-trend trades (following the trend)
-input double Counter_Trend_Multiplier = 0.5; // Lot multiplier for counter-trend trades (against the trend)
 
 // Lot Sizing Modes
 enum ENUM_LOT_SIZING_MODE
@@ -32,16 +31,21 @@ enum ENUM_LOT_SIZING_MODE
 
 // Input Parameters for 30-Minute Trend Trading
 input double      Lot_Size = 1.0;     // Base lot size (used if LotSizing_Mode=DYNAMIC_MARGIN_CHECK)
-input bool        Use_Trend_Filter = true;   // Enable/Disable the EMA trend filter
 input ENUM_LOT_SIZING_MODE LotSizing_Mode = DYNAMIC_MARGIN_CHECK; // Lot sizing strategy
 input bool        DisableTP = true;    // Disable take profit, only use trailing stop
 input int         Trail_Activation_Pips = 10; // Pips in profit to activate trailing stop
+input int         Price_Movement_Points = 5;  // Minimum price movement in points to trigger a trade
+input int         Trade_Cooldown_Seconds = 300; // Cooldown period between trades (in seconds)
 
 #include "include/CommonPatternDetection.mqh"
 
 // Global Variables
 long barCount;
 double volMin, volMax, volStep;
+datetime lastTradeTime = 0;       // Time of the last trade
+double lastTradePrice = 0;        // Price at which the last trade was executed
+bool isFirstTick = true;          // Flag for the first tick
+double previousPrice = 0;         // Previous price for movement detection
 
 // Constants
 #define MAX_MODIFY_ATTEMPTS 3       // Maximum number of attempts to modify a position
@@ -84,6 +88,9 @@ int OnInit()
    // Initialize barCount
    barCount = Bars(_Symbol, PERIOD_CURRENT);
    
+   // Initialize price tracking
+   previousPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
    return(INIT_SUCCEEDED);
 }
 
@@ -100,38 +107,37 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Check for new bar by comparing current bar count with previous count
+   // Check if we need to update indicators on a new bar
    int currentBars = Bars(_Symbol, PERIOD_CURRENT);
+   bool isNewBar = (currentBars != barCount);
    
-   // If no new bar formed, only manage trailing stops and exit
-   if(currentBars == barCount) 
+   // Update bar count if we have a new bar
+   if(isNewBar)
    {
-      ManageTrailingStop();
-      return;
+      barCount = currentBars;
+      
+      // Verify we're using the optimal timeframe for this strategy
+      if(Period() != OPTIMAL_TIMEFRAME)
+      {
+         Print("WARNING: This EA is optimized for 30-minute timeframe. Current timeframe: ", 
+               EnumToString(Period()), ". Performance may be suboptimal.");
+      }
+      
+      // Update all technical indicators for the new bar
+      if(!UpdateIndicators()) 
+      {
+         Print("Failed to update indicators, skipping this bar");
+         return;
+      }
+      
+      Print("Processed new bar at: ", TimeToString(TimeCurrent()));
    }
    
-   // Update bar count as we have a new bar
-   barCount = currentBars;
+   // Always manage trailing stops on every tick
+   ManageTrailingStop();
    
-   // Verify we're using the optimal timeframe for this strategy
-   if(Period() != OPTIMAL_TIMEFRAME)
-   {
-      Print("WARNING: This EA is optimized for 30-minute timeframe. Current timeframe: ", 
-            EnumToString(Period()), ". Performance may be suboptimal.");
-   }
-   
-   // Update all technical indicators for the new bar
-   if(!UpdateIndicators()) 
-   {
-      Print("Failed to update indicators, skipping this bar");
-      return;
-   }
-   
-   // Evaluate entry/exit conditions based on the strategy rules
-   CheckStrategy();
-   
-   // Log successful completion of bar processing
-   Print("Processed new bar at: ", TimeToString(TimeCurrent()));
+   // Check for price movement and trading opportunities on every tick
+   CheckPriceMovement();
 }
 
 //+------------------------------------------------------------------+
@@ -155,67 +161,62 @@ bool UpdateIndicators()
 }
 
 //+------------------------------------------------------------------+
-//| Check strategy conditions                                         |
+//| Check for significant price movement                              |
 //+------------------------------------------------------------------+
-void CheckStrategy()
+void CheckPriceMovement()
 {
-   int shift = 1; // Check the last completed bar
-   double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift);
-   double close1 = iClose(_Symbol, PERIOD_CURRENT, shift);
+   // Get current price
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    
-   if(open1 == 0 || close1 == 0) return;
-   
-   // Determine current trend
-   int currentTrend = Use_Trend_Filter ? DetermineTrend() : TREND_RANGING;
-   
-   // Check price movement direction (up or down)
-   bool isBuy = (close1 > open1);
-   
-   // Determine if we should execute the trade based on trend
-   bool executeTrade = false;
-   
-   executeTrade = false;
-
-   if(currentTrend == TREND_BULLISH && isBuy)
-       executeTrade = true;
-   else if(currentTrend == TREND_BEARISH && !isBuy)
-       executeTrade = true;
-   // Else, skip
-
-   
-   if(executeTrade)
+   // Skip the first tick to establish a baseline
+   if(isFirstTick)
    {
-      double lotMultiplier = 1.0;
-      
-      // Adjust lot size based on trend direction
-      if(currentTrend == TREND_BULLISH && isBuy)
+      previousPrice = currentPrice;
+      isFirstTick = false;
+      return;
+   }
+   
+   // Calculate price movement in points
+   double priceMovement = MathAbs(currentPrice - previousPrice) / _Point;
+   
+   // Check if we have a significant price movement
+   if(priceMovement >= Price_Movement_Points)
+   {
+      // Check if we're outside the cooldown period
+      datetime currentTime = TimeCurrent();
+      if(currentTime - lastTradeTime >= Trade_Cooldown_Seconds)
       {
-         lotMultiplier = With_Trend_Multiplier; // More volume for with-trend buys
-      }
-      else if(currentTrend == TREND_BEARISH && !isBuy)
-      {
-         lotMultiplier = With_Trend_Multiplier; // More volume for with-trend sells
-      }
-      else if((currentTrend == TREND_BULLISH && !isBuy) || (currentTrend == TREND_BEARISH && isBuy))
-      {
-         lotMultiplier = Counter_Trend_Multiplier; // Less volume for counter-trend trades
-      }
-      
-      // Get current price for SL/TP calculation
-      double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      
-      // Execute trade with appropriate lot multiplier
-      // SL/TP will be calculated inside ExecuteTrade using ValidateStopLevel
-      if(isBuy)
-      {
-         ExecuteTrade(true, lotMultiplier);
-      }
-      else
-      {
-         ExecuteTrade(false, lotMultiplier);
+         // Determine if price is moving up or down
+         bool isBuy = (currentPrice > previousPrice);
+         
+         // Determine current trend
+         int currentTrend = DetermineTrend();
+         
+         // Determine if we should execute the trade based on trend
+         bool executeTrade = false;
+         
+         // Only trade with the trend
+         if(currentTrend == TREND_BULLISH && isBuy)
+             executeTrade = true;
+         else if(currentTrend == TREND_BEARISH && !isBuy)
+             executeTrade = true;
+         
+         if(executeTrade)
+         {
+            // Execute trade with appropriate lot multiplier
+            ExecuteTrade(isBuy, With_Trend_Multiplier);
+            
+            // Update last trade time and price
+            lastTradeTime = currentTime;
+            lastTradePrice = currentPrice;
+            
+            Print("Trade executed based on price movement of ", priceMovement, " points");
+         }
       }
    }
+   
+   // Update previous price for next tick comparison
+   previousPrice = currentPrice;
 }
 
 //+------------------------------------------------------------------+
@@ -249,26 +250,88 @@ int DetermineTrend()
    double ema2 = GetEMAValue(2); // Two bars ago
    double ema3 = GetEMAValue(3); // Three bars ago
    double ema4 = GetEMAValue(4); // Four bars ago
+   double ema5 = GetEMAValue(5); // Five bars ago
+   double ema6 = GetEMAValue(6); // Six bars ago
    
    // Get current price and recent prices
    double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double previousClose = iClose(_Symbol, PERIOD_CURRENT, 1);
    
-   // For 30-minute timeframe, check more bars for a stronger trend confirmation
-   bool risingEMA = (ema0 > ema1 && ema1 > ema2 && ema2 > ema3 && ema3 > ema4);
-   bool fallingEMA = (ema0 < ema1 && ema1 < ema2 && ema2 < ema3 && ema3 < ema4);
+   // Calculate EMA slope over multiple periods for more stability
+   double shortSlopeEMA = (ema0 - ema3) / 3; // Slope over 3 bars
+   double longSlopeEMA = (ema0 - ema6) / 6;  // Slope over 6 bars
    
-   // Check price position relative to EMA
-   bool priceAboveEMA = (currentPrice > ema0) && (previousClose > ema1);
-   bool priceBelowEMA = (currentPrice < ema0) && (previousClose < ema1);
+   // Check if EMA is consistently rising or falling (more stable than checking each bar)
+   bool strongRisingEMA = (shortSlopeEMA > 0 && longSlopeEMA > 0 && ema0 > ema1 && ema1 > ema2);
+   bool strongFallingEMA = (shortSlopeEMA < 0 && longSlopeEMA < 0 && ema0 < ema1 && ema1 < ema2);
    
-   // Determine trend based on multiple factors
-   if(risingEMA && priceAboveEMA)
-      return TREND_BULLISH;
-   else if(fallingEMA && priceBelowEMA)
-      return TREND_BEARISH;
+   // Check price position relative to EMA (more stable by checking multiple bars)
+   bool consistentlyAboveEMA = (currentPrice > ema0) && (previousClose > ema1) && 
+                               (iClose(_Symbol, PERIOD_CURRENT, 2) > ema2);
+   bool consistentlyBelowEMA = (currentPrice < ema0) && (previousClose < ema1) && 
+                               (iClose(_Symbol, PERIOD_CURRENT, 2) < ema2);
+   
+   // Store previous trend for comparison
+   static int previousTrend = TREND_RANGING;
+   int currentTrend;
+   
+   // Determine trend based on multiple factors with stronger confirmation
+   if(strongRisingEMA && consistentlyAboveEMA)
+      currentTrend = TREND_BULLISH;
+   else if(strongFallingEMA && consistentlyBelowEMA)
+      currentTrend = TREND_BEARISH;
    else
-      return TREND_RANGING;
+      currentTrend = TREND_RANGING;
+   
+   // Add hysteresis to prevent frequent trend changes
+   // Only change trend if we have a strong signal or if we're moving from ranging to a trend
+   if(currentTrend != previousTrend)
+   {
+      // If we're changing from a defined trend to another defined trend, require stronger confirmation
+      if((previousTrend == TREND_BULLISH && currentTrend == TREND_BEARISH) || 
+         (previousTrend == TREND_BEARISH && currentTrend == TREND_BULLISH))
+      {
+         // Require stronger confirmation to switch between opposite trends
+         if((currentTrend == TREND_BULLISH && strongRisingEMA && consistentlyAboveEMA) ||
+            (currentTrend == TREND_BEARISH && strongFallingEMA && consistentlyBelowEMA))
+         {
+            // Log trend change with detailed information
+            Print("TREND CHANGE: ", 
+                  (previousTrend == TREND_BULLISH ? "BULLISH" : 
+                   previousTrend == TREND_BEARISH ? "BEARISH" : "RANGING"),
+                  " → ", 
+                  (currentTrend == TREND_BULLISH ? "BULLISH" : 
+                   currentTrend == TREND_BEARISH ? "BEARISH" : "RANGING"));
+            
+            // Log the factors that led to this trend change
+            Print("Trend change factors: EMA Slopes (Short/Long): ", 
+                  DoubleToString(shortSlopeEMA, 5), "/", DoubleToString(longSlopeEMA, 5),
+                  ", Price vs EMA: ", (consistentlyAboveEMA ? "Above" : (consistentlyBelowEMA ? "Below" : "Mixed")));
+            
+            previousTrend = currentTrend;
+         }
+         else
+         {
+            // Not enough confirmation to change trend, maintain previous trend
+            currentTrend = previousTrend;
+         }
+      }
+      else
+      {
+         // For transitions to/from ranging, we can be less strict
+         // Log trend change
+         Print("TREND CHANGE: ", 
+               (previousTrend == TREND_BULLISH ? "BULLISH" : 
+                previousTrend == TREND_BEARISH ? "BEARISH" : "RANGING"),
+               " → ", 
+               (currentTrend == TREND_BULLISH ? "BULLISH" : 
+                currentTrend == TREND_BEARISH ? "BEARISH" : "RANGING"));
+         
+         previousTrend = currentTrend;
+      }
+   }
+   
+   return currentTrend;
 }
 
 //+------------------------------------------------------------------+
@@ -365,9 +428,6 @@ void ExecuteTrade(bool isBuy, double lotMultiplier = 1.0)
    }
 }
 
-
-
-
 //+------------------------------------------------------------------+
 //| Validate and set stop level at broker minimum                     |
 //+------------------------------------------------------------------+
@@ -435,8 +495,6 @@ double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss, doubl
    return finalNormalizedLevel; // Return the final buffered and normalized level
 }
 
-
-
 //+------------------------------------------------------------------+
 //| Get appropriate lot size based on mode and margin                 |
 //+------------------------------------------------------------------+
@@ -479,7 +537,6 @@ double GetLotSize()
    
    return lotSize;
 }
-
 
 //+------------------------------------------------------------------+
 //| Manage trailing stop                                              |
