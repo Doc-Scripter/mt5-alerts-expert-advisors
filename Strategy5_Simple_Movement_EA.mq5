@@ -285,73 +285,101 @@ void ExecuteTrade(bool isBuy, double lotMultiplier = 1.0)
 {
    double baseLotSize = GetLotSize();
    if(baseLotSize <= 0) return;
-   
-   // Apply the lot multiplier
+
    double lotSize = NormalizeDouble(baseLotSize * lotMultiplier, 2);
-   
-   // Ensure lot size is within allowed range
    lotSize = MathMax(lotSize, volMin);
    lotSize = MathMin(lotSize, volMax);
-   
-   // Round to the nearest valid lot step
    lotSize = MathRound(lotSize / volStep) * volStep;
-   
-   // Get current price
+
    double entryPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   
-   // Always set SL/TP at broker minimum distance from current price
-   double stopLoss = ValidateStopLevel(0, isBuy, true);
-   
-   // Validate and adjust take profit (always uses broker minimum distance)
-   double takeProfit = 0;
-   if(!DisableTP)
-      takeProfit = ValidateStopLevel(0, isBuy, false);
-   
-   // Prepare trade request
+
+   // Pre-calculate TP only (SL will be recalculated per attempt)
+   double preTP = (!DisableTP) ? ValidateStopLevel(0, isBuy, false, entryPrice) : 0;
+
    MqlTradeRequest request = {};
    MqlTradeResult result = {};
-   
+
    request.action = TRADE_ACTION_DEAL;
    request.symbol = _Symbol;
    request.volume = lotSize;
    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    request.price = entryPrice;
-   request.sl = stopLoss;
-   if(!DisableTP) request.tp = takeProfit;
+   request.sl = 0;
+   request.tp = 0;
    request.deviation = 10;
    request.magic = MAGIC_NUMBER;
    request.comment = "Strategy 5 " + (isBuy ? "Buy" : "Sell") + " Trend: " + 
                      (DetermineTrend() == TREND_BULLISH ? "Bullish" : 
                       DetermineTrend() == TREND_BEARISH ? "Bearish" : "Ranging");
-   
-   // Log the trade details before sending
-   Print("Attempting to open ", (isBuy ? "BUY" : "SELL"), " position: ",
-         "Price: ", request.price,
-         ", SL: ", request.sl,
-         ", TP: ", request.tp,
-         ", Lot: ", lotSize);
-   
-   // Send the order
+
    if(!OrderSend(request, result))
    {
-      Print("OrderSend failed with error: ", GetLastError());
+      Print("OrderSend failed. Error: ", GetLastError(), " Retcode: ", result.retcode);
       return;
    }
-   
-   // Log successful trade
-   if(result.retcode == TRADE_RETCODE_DONE)
+
+   if(result.retcode != TRADE_RETCODE_DONE)
    {
-      Print("Trade executed successfully. Ticket: ", result.order, 
-            " Type: ", (isBuy ? "Buy" : "Sell"), 
-            " Lot: ", lotSize, 
-            " (Base: ", baseLotSize, ", Multiplier: ", lotMultiplier, ")");
+      Print("OrderSend retcode indicates failure: ", result.retcode, " Comment: ", result.comment);
+      return;
+   }
+
+   Print("Trade executed. Ticket: ", result.order, 
+         " Type: ", (isBuy ? "Buy" : "Sell"), 
+         " Lot: ", lotSize, 
+         " Price: ", entryPrice);
+
+   // --- Modify SL/TP after successful order (recalculate SL each attempt) ---
+   MqlTradeRequest modRequest = {};
+   MqlTradeResult modResult = {};
+
+   modRequest.action = TRADE_ACTION_SLTP;
+   modRequest.position = result.order;
+   modRequest.symbol = _Symbol;
+   modRequest.tp = preTP;
+
+   int modifyAttempts = 0;
+   const int maxModifyAttempts = 5;
+   bool modified = false;
+
+   while(modifyAttempts < maxModifyAttempts)
+   {
+      double latestPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double dynamicSL = ValidateStopLevel(0, isBuy, true, latestPrice);  // dynamically refreshed
+
+      modRequest.sl = dynamicSL;
+
+      if(OrderSend(modRequest, modResult) && modResult.retcode == TRADE_RETCODE_DONE)
+      {
+         Print("SL/TP successfully applied post-order. SL: ", dynamicSL, " TP: ", preTP);
+         modified = true;
+         break;
+      }
+
+      Print("Failed to modify SL (attempt ", modifyAttempts+1, "). Error: ", GetLastError(), 
+            " Retcode: ", modResult.retcode, " Msg: ", modResult.comment);
+
+      if(modResult.retcode != TRADE_RETCODE_INVALID_STOPS)
+         break; // Stop on any non-SL error
+
+      Sleep(200);
+      modifyAttempts++;
+   }
+
+   if(!modified)
+   {
+      Print("SL/TP modification failed after ", maxModifyAttempts, " attempts.");
    }
 }
+
+
+
 
 //+------------------------------------------------------------------+
 //| Validate and set stop level at broker minimum                     |
 //+------------------------------------------------------------------+
-double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss)
+// Added optional 'marketPrice' parameter. If > 0, use it instead of fetching current Ask/Bid.
+double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss, double marketPrice = 0)
 {
    // 1) Broker min‑stop in *points*
    long stopPoints = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
@@ -364,44 +392,63 @@ double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss)
    if(minDist < tick) 
       minDist = tick;
 
-   // 2) Use provided price or get current market price
-   double entry = currentPrice > 0 ? currentPrice : 
-                  (isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) 
-                         : SymbolInfoDouble(_Symbol, SYMBOL_BID));
-
-   // 3) Compute raw stop level
-   double raw = 0;
-   if(isStopLoss)
-      raw = isBuy ? (entry - minDist)    // buy SL = ask − minDist
-                  : (entry + minDist);   // sell SL = bid + minDist
-   else  // take‑profit
-      raw = isBuy ? (entry + minDist)
-                  : (entry - minDist);
-
-   // 4) Round *away* from the entry so we never violate min‑distance
-   double normalized;
-   if(isStopLoss)
+   // 2) Determine the reference price for calculation
+   // Use provided marketPrice if valid, otherwise use currentPrice if valid, else fetch current Ask/Bid
+   double referencePrice = 0;
+   if (marketPrice > 0)
    {
-      // for SL, you want the price even *further* away
-      normalized = isBuy 
-                   ? MathFloor(raw / tick) * tick 
-                   : MathCeil (raw / tick) * tick;
+       referencePrice = marketPrice; // Use explicitly passed market price
+   }
+   else if (currentPrice > 0)
+   {
+       referencePrice = currentPrice; // Use price passed for trailing stop context
    }
    else
    {
-      // for TP, same logic: push the TP even further
-      normalized = isBuy 
-                   ? MathCeil (raw / tick) * tick 
-                   : MathFloor(raw / tick) * tick;
+       referencePrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID); // Fetch current market price
    }
-   normalized = NormalizeDouble(normalized, digits);
+
+
+   // --- Add Buffer to Minimum Distance ---
+   double bufferPoints = 10; // Add a 10-point (1 pip for most pairs) buffer
+   double bufferPrice = bufferPoints * point;
+   double minDistWithBuffer = minDist + bufferPrice; // Add buffer directly to min distance
+   // --- End Buffer Addition ---
+
+   // 3) Compute raw stop level using the buffered minimum distance relative to the referencePrice
+   double rawStopLevel = 0;
+   if(isStopLoss)
+      rawStopLevel = isBuy ? (referencePrice - minDistWithBuffer) // Use referencePrice
+                           : (referencePrice + minDistWithBuffer); // Use referencePrice
+   else  // take‑profit
+      rawStopLevel = isBuy ? (referencePrice + minDistWithBuffer) // Use referencePrice
+                           : (referencePrice - minDistWithBuffer); // Use referencePrice
+
+   // 4) Round the final level *away* from the referencePrice so we never violate min‑distance
+   double finalNormalizedLevel;
+   if(isStopLoss)
+   {
+      // for SL, round further away from entry
+      finalNormalizedLevel = isBuy
+                             ? MathFloor(rawStopLevel / tick) * tick
+                             : MathCeil (rawStopLevel / tick) * tick;
+   }
+   else // Take Profit
+   {
+      // for TP, round further away from entry
+      finalNormalizedLevel = isBuy
+                             ? MathCeil (rawStopLevel / tick) * tick
+                             : MathFloor(rawStopLevel / tick) * tick;
+   }
+   finalNormalizedLevel = NormalizeDouble(finalNormalizedLevel, digits);
+
 
    PrintFormat(
-     "ValidateStopLevel: entry=%.5f, isBuy=%d, isSL=%d → raw=%.5f, final=%.5f",
-     entry, isBuy, isStopLoss, raw, normalized
+     "ValidateStopLevel: refPrice=%.5f, isBuy=%d, isSL=%d → minDist=%.5f, buffer=%.5f, minDistBuf=%.5f, rawSL=%.5f, final=%.5f",
+     referencePrice, isBuy, isStopLoss, minDist, bufferPrice, minDistWithBuffer, rawStopLevel, finalNormalizedLevel
    );
 
-   return normalized;
+   return finalNormalizedLevel; // Return the final buffered and normalized level
 }
 
 
