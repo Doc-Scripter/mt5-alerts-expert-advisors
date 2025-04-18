@@ -174,21 +174,14 @@ void CheckStrategy()
    // Determine if we should execute the trade based on trend
    bool executeTrade = false;
    
-   if(currentTrend == TREND_BULLISH)
-   {
-      // In bullish trend, take buy signals only
-      executeTrade = isBuy;
-   }
-   else if(currentTrend == TREND_BEARISH)
-   {
-      // In bearish trend, take sell signals only
-      executeTrade = !isBuy;
-   }
-   else // TREND_RANGING
-   {
-      // In ranging market, take both buy and sell signals
-      executeTrade = true;
-   }
+  executeTrade = false;
+
+if(currentTrend == TREND_BULLISH && isBuy)
+    executeTrade = true;
+else if(currentTrend == TREND_BEARISH && !isBuy)
+    executeTrade = true;
+// Else, skip
+
    
    if(executeTrade)
    {
