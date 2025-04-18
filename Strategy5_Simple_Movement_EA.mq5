@@ -174,13 +174,13 @@ void CheckStrategy()
    // Determine if we should execute the trade based on trend
    bool executeTrade = false;
    
-  executeTrade = false;
+   executeTrade = false;
 
-if(currentTrend == TREND_BULLISH && isBuy)
-    executeTrade = true;
-else if(currentTrend == TREND_BEARISH && !isBuy)
-    executeTrade = true;
-// Else, skip
+   if(currentTrend == TREND_BULLISH && isBuy)
+       executeTrade = true;
+   else if(currentTrend == TREND_BEARISH && !isBuy)
+       executeTrade = true;
+   // Else, skip
 
    
    if(executeTrade)
@@ -371,7 +371,6 @@ void ExecuteTrade(bool isBuy, double lotMultiplier = 1.0)
 //+------------------------------------------------------------------+
 //| Validate and set stop level at broker minimum                     |
 //+------------------------------------------------------------------+
-// Added optional 'marketPrice' parameter. If > 0, use it instead of fetching current Ask/Bid.
 double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss, double marketPrice = 0)
 {
    // 1) Broker min‑stop in *points*
@@ -401,21 +400,19 @@ double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss, doubl
        referencePrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID); // Fetch current market price
    }
 
-
    // --- Add Buffer to Minimum Distance ---
    double bufferPoints = 10; // Add a 10-point (1 pip for most pairs) buffer
    double bufferPrice = bufferPoints * point;
    double minDistWithBuffer = minDist + bufferPrice; // Add buffer directly to min distance
-   // --- End Buffer Addition ---
 
    // 3) Compute raw stop level using the buffered minimum distance relative to the referencePrice
    double rawStopLevel = 0;
    if(isStopLoss)
-      rawStopLevel = isBuy ? (referencePrice - minDistWithBuffer) // Use referencePrice
-                           : (referencePrice + minDistWithBuffer); // Use referencePrice
+      rawStopLevel = isBuy ? (referencePrice - minDistWithBuffer)
+                           : (referencePrice + minDistWithBuffer);
    else  // take‑profit
-      rawStopLevel = isBuy ? (referencePrice + minDistWithBuffer) // Use referencePrice
-                           : (referencePrice - minDistWithBuffer); // Use referencePrice
+      rawStopLevel = isBuy ? (referencePrice + minDistWithBuffer)
+                           : (referencePrice - minDistWithBuffer);
 
    // 4) Round the final level *away* from the referencePrice so we never violate min‑distance
    double finalNormalizedLevel;
@@ -434,12 +431,6 @@ double ValidateStopLevel(double currentPrice, bool isBuy, bool isStopLoss, doubl
                              : MathFloor(rawStopLevel / tick) * tick;
    }
    finalNormalizedLevel = NormalizeDouble(finalNormalizedLevel, digits);
-
-
-   PrintFormat(
-     "ValidateStopLevel: refPrice=%.5f, isBuy=%d, isSL=%d → minDist=%.5f, buffer=%.5f, minDistBuf=%.5f, rawSL=%.5f, final=%.5f",
-     referencePrice, isBuy, isStopLoss, minDist, bufferPrice, minDistWithBuffer, rawStopLevel, finalNormalizedLevel
-   );
 
    return finalNormalizedLevel; // Return the final buffered and normalized level
 }
@@ -517,7 +508,7 @@ void ManageTrailingStop()
       if(profitPips >= Trail_Activation_Pips)
       {
          // Set new SL at broker minimum distance from current price (always uses broker minimum)
-         double newSL = ValidateStopLevel(currentPrice, isBuy, true);  // FIXED: Added currentPrice parameter
+         double newSL = ValidateStopLevel(currentPrice, isBuy, true);
          bool modifyNeeded = false;
          
          if(isBuy)
