@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+        "vscode": {
+            "command": "mcp-proxy",
+            "args": ["http://127.0.0.1:6010/sse"]
+        }
+        
+    }
+}

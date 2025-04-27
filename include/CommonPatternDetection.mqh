@@ -309,41 +309,56 @@ void DrawEMALine()
       return;
    }
    
-   int available = ArraySize(g_ema.values);
+   // We want to draw EMA for 200 candles
+   const int requiredBars = 200;
+   
+   // Resize the array to hold 200 values
+   ArrayResize(g_ema.values, requiredBars);
+   ArraySetAsSeries(g_ema.values, true);
+   
+   // Copy the EMA values for 200 bars
+   int copied = CopyBuffer(g_ema.handle, 0, 0, requiredBars, g_ema.values);
+   if(copied < requiredBars)
+   {
+      Print("DrawEMALine: Failed to copy EMA values. Requested: ", requiredBars, ", Copied: ", copied);
+      // Continue with what we have if we couldn't get all 200
+   }
+   
+   int available = MathMin(copied, requiredBars);
    if(available < 2)
    {
       Print("DrawEMALine: Not enough data points. Available: ", available);
       return;
    }
    
-   // Delete existing EMA lines
+   Print("DrawEMALine: Drawing EMA for ", available, " bars");
+   
+   // Delete existing EMA objects
    ObjectsDeleteAll(0, "EMA_Line");
    
-   // Draw EMA line segments connecting available points
-   datetime time1, time2;
-   double price1, price2;
-   
-   for(int i = 1; i < available; i++)
+   // Use a trendline to visualize EMA
+   for(int i = 0; i < available-1; i++)
    {
       string objName = "EMA_Line_" + IntegerToString(i);
       
-      time1 = iTime(_Symbol, PERIOD_CURRENT, i);
-      time2 = iTime(_Symbol, PERIOD_CURRENT, i-1);
-      price1 = g_ema.values[i];
-      price2 = g_ema.values[i-1];
+      datetime time1 = iTime(_Symbol, PERIOD_CURRENT, i);
+      datetime time2 = iTime(_Symbol, PERIOD_CURRENT, i+1);
       
-      if(!ObjectCreate(0, objName, OBJ_TREND, 0, time1, price1, time2, price2))
+      if(!ObjectCreate(0, objName, OBJ_TREND, 0, time1, g_ema.values[i], time2, g_ema.values[i+1]))
       {
-         Print("Failed to create EMA line segment. Error: ", GetLastError());
+         Print("Failed to create EMA segment: ", GetLastError());
          continue;
       }
       
+      // Make the lines look connected
       ObjectSetInteger(0, objName, OBJPROP_COLOR, EMA_LINE_COLOR);
       ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
       ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, false);
       ObjectSetInteger(0, objName, OBJPROP_RAY_LEFT, false);
+      ObjectSetInteger(0, objName, OBJPROP_STYLE, STYLE_SOLID);
+      ObjectSetInteger(0, objName, OBJPROP_BACK, true); // Draw behind price bars
       ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, objName, OBJPROP_BACK, false);
+      ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
    }
    
    ChartRedraw(0);
