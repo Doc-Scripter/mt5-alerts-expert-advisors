@@ -44,9 +44,11 @@ int g_crossoverBar = -1;  // Bar index when crossover occurred (-1 means no cros
 // Trend Filter Handles & Buffers
 int trendFastEmaHandle;
 int trendSlowEmaHandle;
+int trendMediumEmaHandle;
 int trendAdxHandle;
 double trendFastEmaValues[];
 double trendSlowEmaValues[];
+double trendMediumEmaValues[];
 double trendAdxValues[];
 
 // Constants
@@ -97,11 +99,13 @@ int OnInit()
    // Initialize trend filter indicators
    if(Use_Trend_Filter)
    {
-      trendFastEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 20, 0, MODE_EMA, PRICE_CLOSE);
+      trendFastEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 8, 0, MODE_EMA, PRICE_CLOSE);
+      trendMediumEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 21, 0, MODE_EMA, PRICE_CLOSE);
       trendSlowEmaHandle = iMA(_Symbol, PERIOD_CURRENT, 50, 0, MODE_EMA, PRICE_CLOSE);
       trendAdxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
       
       if(trendFastEmaHandle == INVALID_HANDLE || 
+         trendMediumEmaHandle == INVALID_HANDLE ||
          trendSlowEmaHandle == INVALID_HANDLE || 
          trendAdxHandle == INVALID_HANDLE)
       {
@@ -154,6 +158,8 @@ void OnDeinit(const int reason)
    {
       if(trendFastEmaHandle != INVALID_HANDLE)
          IndicatorRelease(trendFastEmaHandle);
+      if(trendMediumEmaHandle != INVALID_HANDLE)
+         IndicatorRelease(trendMediumEmaHandle);
       if(trendSlowEmaHandle != INVALID_HANDLE)
          IndicatorRelease(trendSlowEmaHandle);
       if(trendAdxHandle != INVALID_HANDLE)
@@ -202,12 +208,14 @@ bool UpdateIndicators()
    if(Use_Trend_Filter)
    {
       ArraySetAsSeries(trendFastEmaValues, true);
+      ArraySetAsSeries(trendMediumEmaValues, true);
       ArraySetAsSeries(trendSlowEmaValues, true);
       ArraySetAsSeries(trendAdxValues, true);
       
-      if(CopyBuffer(trendFastEmaHandle, 0, 0, 3, trendFastEmaValues) < 3 ||
-         CopyBuffer(trendSlowEmaHandle, 0, 0, 3, trendSlowEmaValues) < 3 ||
-         CopyBuffer(trendAdxHandle, 0, 0, 3, trendAdxValues) < 3)
+      if(CopyBuffer(trendFastEmaHandle, 0, 0, 5, trendFastEmaValues) < 5 ||
+         CopyBuffer(trendMediumEmaHandle, 0, 0, 5, trendMediumEmaValues) < 5 ||
+         CopyBuffer(trendSlowEmaHandle, 0, 0, 5, trendSlowEmaValues) < 5 ||
+         CopyBuffer(trendAdxHandle, 0, 0, 5, trendAdxValues) < 5)
       {
          Print("Failed to copy trend filter values");
          return false;
@@ -348,8 +356,94 @@ void CheckStrategy()
 //+------------------------------------------------------------------+
 void ExecuteTrade(bool isBuy, double stopLoss, double takeProfit)
 {
+   // Check if we already have an open position with our magic number
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      // Check if position belongs to this EA and this symbol
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+         PositionGetInteger(POSITION_MAGIC) == MAGIC_NUMBER)
+      {
+         Print("INFO: Trade rejected - already have an open position. Only one trade at a time allowed.");
+         return; // Exit without opening a new trade
+      }
+   }
+   
    double lotSize = GetLotSize();
    if(lotSize <= 0) return;
+   
+   // Get current market prices
+   double askPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bidPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double entryPrice = isBuy ? askPrice : bidPrice;
+   
+   // Validate stop loss and take profit levels
+   if(isBuy)
+   {
+      // For BUY orders: SL must be below entry price, TP must be above entry price
+      if(stopLoss >= entryPrice)
+      {
+         Print("ERROR: Invalid stop loss for BUY order. SL (", stopLoss, ") must be below entry price (", entryPrice, ")");
+         return;
+      }
+      
+      if(takeProfit <= entryPrice)
+      {
+         Print("ERROR: Invalid take profit for BUY order. TP (", takeProfit, ") must be above entry price (", entryPrice, ")");
+         return;
+      }
+   }
+   else
+   {
+      // For SELL orders: SL must be above entry price, TP must be below entry price
+      if(stopLoss <= entryPrice)
+      {
+         Print("ERROR: Invalid stop loss for SELL order. SL (", stopLoss, ") must be above entry price (", entryPrice, ")");
+         return;
+      }
+      
+      if(takeProfit >= entryPrice)
+      {
+         Print("ERROR: Invalid take profit for SELL order. TP (", takeProfit, ") must be below entry price (", entryPrice, ")");
+         return;
+      }
+   }
+   
+   // Check minimum distance for SL and TP
+   int stopLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double pointValue = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minDistance = stopLevel * pointValue;
+   
+   if(isBuy)
+   {
+      if(entryPrice - stopLoss < minDistance)
+      {
+         Print("WARNING: Stop loss too close to entry price. Adjusting SL to minimum allowed distance.");
+         stopLoss = entryPrice - minDistance;
+      }
+      
+      if(takeProfit - entryPrice < minDistance)
+      {
+         Print("WARNING: Take profit too close to entry price. Adjusting TP to minimum allowed distance.");
+         takeProfit = entryPrice + minDistance;
+      }
+   }
+   else
+   {
+      if(stopLoss - entryPrice < minDistance)
+      {
+         Print("WARNING: Stop loss too close to entry price. Adjusting SL to minimum allowed distance.");
+         stopLoss = entryPrice + minDistance;
+      }
+      
+      if(entryPrice - takeProfit < minDistance)
+      {
+         Print("WARNING: Take profit too close to entry price. Adjusting TP to minimum allowed distance.");
+         takeProfit = entryPrice - minDistance;
+      }
+   }
    
    MqlTradeRequest request = {};
    MqlTradeResult result = {};
@@ -358,7 +452,7 @@ void ExecuteTrade(bool isBuy, double stopLoss, double takeProfit)
    request.symbol = _Symbol;
    request.volume = lotSize;
    request.type = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   request.price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   request.price = entryPrice;
    request.sl = stopLoss;
    request.tp = takeProfit;
    request.deviation = 10;
@@ -367,14 +461,14 @@ void ExecuteTrade(bool isBuy, double stopLoss, double takeProfit)
    
    if(!OrderSend(request, result))
    {
-      Print("OrderSend failed with error: ", GetLastError());
+      Print("ERROR: OrderSend failed with error: ", GetLastError());
       return;
    }
    
    if(result.retcode == TRADE_RETCODE_DONE)
    {
       g_lastTradeTime = TimeCurrent();
-      Print("Trade executed successfully. Ticket: ", result.order);
+      Print("SIGNAL: Trade executed successfully. Ticket: ", result.order);
    }
 }
 
@@ -445,7 +539,8 @@ int CountSwingPoints(int lookback, bool isBullish)
    
    if(barsToCheck < 3) barsToCheck = 3; // Need at least 3 bars to detect a swing
    
-   Print("Checking for swing points from crossover bar ", g_crossoverBar, " using ", barsToCheck, " bars");
+   // Reduced logging - only log the essential information
+   Print("INFO: Checking swing points - ", (isBullish ? "Bullish" : "Bearish"), " setup");
    
    double highs[], lows[], emaValues[];
    ArraySetAsSeries(highs, true);
@@ -456,7 +551,7 @@ int CountSwingPoints(int lookback, bool isBullish)
    if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, barsToCheck, highs) != barsToCheck ||
       CopyLow(_Symbol, PERIOD_CURRENT, 0, barsToCheck, lows) != barsToCheck)
    {
-      Print("Failed to copy price data for swing detection");
+      Print("ERROR: Failed to copy price data for swing detection");
       return 999; // Return a high number to prevent trade
    }
    
@@ -465,7 +560,7 @@ int CountSwingPoints(int lookback, bool isBullish)
    {
       if(!UpdateEMAValues(barsToCheck))
       {
-         Print("Failed to update EMA values for swing detection");
+         Print("ERROR: Failed to update EMA values for swing detection");
          return 999; // Return a high number to prevent trade
       }
    }
@@ -480,20 +575,37 @@ int CountSwingPoints(int lookback, bool isBullish)
    // Clear any existing swing point markers
    ObjectsDeleteAll(0, "SwingPoint_");
    
-   int validSwingCount = 0;
+   // IMPORTANT FIX: Only check for swing points between current bar and crossover bar
+   int startBar = 1;  // Current completed bar
+   int endBar = g_crossoverBar;  // The bar where crossover occurred
    
-   // Mark and count swing lows (local minima) since the EMA crossover
-   for(int i = 1; i < barsToCheck - 1; i++)
+   // First, identify all swing points
+   double swingHighs[], swingLows[];
+   datetime swingHighTimes[], swingLowTimes[];
+   int swingHighCount = 0, swingLowCount = 0;
+   
+   // Find all swing lows
+   for(int i = startBar; i <= endBar; i++)
    {
+      // Skip if we don't have enough bars to check neighbors
+      if(i <= 0 || i >= barsToCheck - 1) continue;
+      
       // Check if this is a swing low (lower than both neighbors)
       if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
       {
-         // Check if the swing low is below the EMA
-         bool isBelowEMA = (lows[i] < emaValues[i]);
+         // Add to swing lows array
+         ArrayResize(swingLows, swingLowCount + 1);
+         ArrayResize(swingLowTimes, swingLowCount + 1);
+         swingLows[swingLowCount] = lows[i];
+         swingLowTimes[swingLowCount] = iTime(_Symbol, PERIOD_CURRENT, i);
+         swingLowCount++;
          
          // Mark the swing low on the chart
          string objName = "SwingPoint_Low_" + IntegerToString(i);
          datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+         
+         // Check if the swing low is below the EMA
+         bool isBelowEMA = (lows[i] < emaValues[i]);
          
          // Use different colors based on position relative to EMA
          color swingColor = isBelowEMA ? clrRed : clrOrange;
@@ -502,36 +614,31 @@ int CountSwingPoints(int lookback, bool isBullish)
          ObjectSetInteger(0, objName, OBJPROP_COLOR, swingColor);
          ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
          ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-         
-         // Only count swing lows below the EMA as valid swing points for bullish setups
-         if(isBullish && isBelowEMA)
-         {
-            validSwingCount++;
-            Print("Valid bullish swing low detected at bar ", i, ", price: ", lows[i], " (below EMA: ", emaValues[i], ")");
-         }
-         else if(isBullish)
-         {
-            Print("Ignored bullish swing low at bar ", i, ", price: ", lows[i], " (above EMA: ", emaValues[i], ")");
-         }
-         else
-         {
-            Print("Marked bearish swing low at bar ", i, ", price: ", lows[i], " (not counted for bearish setup)");
-         }
       }
    }
    
-   // Mark and count swing highs (local maxima) since the EMA crossover
-   for(int i = 1; i < barsToCheck - 1; i++)
+   // Find all swing highs
+   for(int i = startBar; i <= endBar; i++)
    {
+      // Skip if we don't have enough bars to check neighbors
+      if(i <= 0 || i >= barsToCheck - 1) continue;
+      
       // Check if this is a swing high (higher than both neighbors)
       if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
       {
-         // Check if the swing high is above the EMA
-         bool isAboveEMA = (highs[i] > emaValues[i]);
+         // Add to swing highs array
+         ArrayResize(swingHighs, swingHighCount + 1);
+         ArrayResize(swingHighTimes, swingHighCount + 1);
+         swingHighs[swingHighCount] = highs[i];
+         swingHighTimes[swingHighCount] = iTime(_Symbol, PERIOD_CURRENT, i);
+         swingHighCount++;
          
          // Mark the swing high on the chart
          string objName = "SwingPoint_High_" + IntegerToString(i);
          datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+         
+         // Check if the swing high is above the EMA
+         bool isAboveEMA = (highs[i] > emaValues[i]);
          
          // Use different colors based on position relative to EMA
          color swingColor = isAboveEMA ? clrBlue : clrAqua;
@@ -540,25 +647,134 @@ int CountSwingPoints(int lookback, bool isBullish)
          ObjectSetInteger(0, objName, OBJPROP_COLOR, swingColor);
          ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
          ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+      }
+   }
+   
+   // Now check if any swing points have been broken
+   bool swingBroken = false;
+   
+   // CORRECTED LOGIC:
+   // For bullish setup, check if any swing HIGH has been broken (price goes higher than a swing high)
+   if(isBullish && swingHighCount > 0)
+   {
+      for(int i = 0; i < swingHighCount; i++)
+      {
+         // Find the bar index for this swing high
+         datetime swingTime = swingHighTimes[i];
+         double swingPrice = swingHighs[i];
          
-         // Only count swing highs above the EMA as valid swing points for bearish setups
-         if(!isBullish && isAboveEMA)
+         // Check all bars after this swing high
+         for(int j = startBar; j < endBar; j++)
+         {
+            datetime barTime = iTime(_Symbol, PERIOD_CURRENT, j);
+            
+            // Only check bars that come after this swing high
+            if(barTime <= swingTime) continue;
+            
+            // If any bar's high is above the swing high, the swing is broken
+            if(highs[j] > swingPrice)
+            {
+               swingBroken = true;
+               Print("INFO: Bullish swing high at ", TimeToString(swingTime), " (", swingPrice, ") broken by bar at ", 
+                     TimeToString(barTime), " with high of ", highs[j]);
+               
+               // Mark the broken swing
+               string objName = "BrokenSwing_" + IntegerToString(j);
+               ObjectCreate(0, objName, OBJ_ARROW_CHECK, 0, barTime, highs[j] + 10 * _Point);
+               ObjectSetInteger(0, objName, OBJPROP_COLOR, clrMagenta);
+               ObjectSetInteger(0, objName, OBJPROP_WIDTH, 3);
+               ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+               
+               break;
+            }
+         }
+         
+         if(swingBroken) break;
+      }
+   }
+   // For bearish setup, check if any swing LOW has been broken (price goes lower than a swing low)
+   else if(!isBullish && swingLowCount > 0)
+   {
+      for(int i = 0; i < swingLowCount; i++)
+      {
+         // Find the bar index for this swing low
+         datetime swingTime = swingLowTimes[i];
+         double swingPrice = swingLows[i];
+         
+         // Check all bars after this swing low
+         for(int j = startBar; j < endBar; j++)
+         {
+            datetime barTime = iTime(_Symbol, PERIOD_CURRENT, j);
+            
+            // Only check bars that come after this swing low
+            if(barTime <= swingTime) continue;
+            
+            // If any bar's low is below the swing low, the swing is broken
+            if(lows[j] < swingPrice)
+            {
+               swingBroken = true;
+               Print("INFO: Bearish swing low at ", TimeToString(swingTime), " (", swingPrice, ") broken by bar at ", 
+                     TimeToString(barTime), " with low of ", lows[j]);
+               
+               // Mark the broken swing
+               string objName = "BrokenSwing_" + IntegerToString(j);
+               ObjectCreate(0, objName, OBJ_ARROW_CHECK, 0, barTime, lows[j] - 10 * _Point);
+               ObjectSetInteger(0, objName, OBJPROP_COLOR, clrMagenta);
+               ObjectSetInteger(0, objName, OBJPROP_WIDTH, 3);
+               ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+               
+               break;
+            }
+         }
+         
+         if(swingBroken) break;
+      }
+   }
+   
+   // If any swing was broken, reset the count to 0
+   if(swingBroken)
+   {
+      Print("INFO: Swing point broken - resetting count to 0");
+      return 0;
+   }
+   
+   // If no swings were broken, count valid swing points
+   int validSwingCount = 0;
+   
+   // Count valid swing lows for bullish setup
+   if(isBullish)
+   {
+      for(int i = 0; i < swingLowCount; i++)
+      {
+         // Find the bar index for this swing low
+         datetime swingTime = swingLowTimes[i];
+         int barIndex = iBarShift(_Symbol, PERIOD_CURRENT, swingTime);
+         
+         // Check if this swing low is below the EMA
+         if(barIndex >= 0 && barIndex < ArraySize(emaValues) && swingLows[i] < emaValues[barIndex])
          {
             validSwingCount++;
-            Print("Valid bearish swing high detected at bar ", i, ", price: ", highs[i], " (above EMA: ", emaValues[i], ")");
          }
-         else if(!isBullish)
+      }
+   }
+   // Count valid swing highs for bearish setup
+   else
+   {
+      for(int i = 0; i < swingHighCount; i++)
+      {
+         // Find the bar index for this swing high
+         datetime swingTime = swingHighTimes[i];
+         int barIndex = iBarShift(_Symbol, PERIOD_CURRENT, swingTime);
+         
+         // Check if this swing high is above the EMA
+         if(barIndex >= 0 && barIndex < ArraySize(emaValues) && swingHighs[i] > emaValues[barIndex])
          {
-            Print("Ignored bearish swing high at bar ", i, ", price: ", highs[i], " (below EMA: ", emaValues[i], ")");
-         }
-         else
-         {
-            Print("Marked bullish swing high at bar ", i, ", price: ", highs[i], " (not counted for bullish setup)");
+            validSwingCount++;
          }
       }
    }
    
-   Print("Total valid swing points detected since crossover: ", validSwingCount);
+   Print("INFO: Total valid swing points: ", validSwingCount);
    return validSwingCount;
 }
 
@@ -664,14 +880,40 @@ int GetTrendState()
    if(!Use_Trend_Filter) return TREND_RANGING;
    
    double fastEMA = trendFastEmaValues[0];
+   double mediumEMA = trendMediumEmaValues[0];
    double slowEMA = trendSlowEmaValues[0];
    double adxValue = trendAdxValues[0];
    
-   bool isStrong = (adxValue > 25.0);
-   bool isBullish = (fastEMA > slowEMA);
+   // Check if we have enough data
+   if(fastEMA <= 0 || slowEMA <= 0 || adxValue <= 0)
+   {
+      Print("WARNING: Trend filter has invalid indicator values");
+      return TREND_RANGING; // Default to ranging if data is invalid
+   }
    
-   if(isStrong && isBullish) return TREND_BULLISH;
-   if(isStrong && !isBullish) return TREND_BEARISH;
+   // Strong trend conditions
+   bool isStrongTrend = (adxValue >= 25.0);
+   
+   // Determine trend direction based on EMA alignment
+   if(isStrongTrend)
+   {
+      // For strong trends, require clear EMA alignment
+      if(fastEMA > mediumEMA && mediumEMA > slowEMA)
+      {
+         Print("INFO: Strong bullish trend detected (ADX: ", adxValue, ")");
+         return TREND_BULLISH;
+      }
+      else if(fastEMA < mediumEMA && mediumEMA < slowEMA)
+      {
+         Print("INFO: Strong bearish trend detected (ADX: ", adxValue, ")");
+         return TREND_BEARISH;
+      }
+   }
+   
+   // If we reach here, we're in a ranging market or weak trend
+   // Instead of blocking trades, we'll return TREND_RANGING
+   // This allows both buy and sell trades if other conditions are met
+   Print("INFO: Market is ranging or has weak trend (ADX: ", adxValue, ")");
    return TREND_RANGING;
 }
 
