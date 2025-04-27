@@ -50,7 +50,6 @@ double trendSlowEmaValues[];
 double trendAdxValues[];
 
 // Constants
-#define EMA_PERIOD 20
 #define STRATEGY_COOLDOWN_MINUTES 60
 
 //+------------------------------------------------------------------+
@@ -190,7 +189,15 @@ bool UpdateIndicators()
    if(!UpdateEMAValues(4))
       return false;
    
-   DrawEMALine();
+   // Draw EMA line - only once per bar
+   static datetime lastEmaDrawTime = 0;
+   datetime currentTime = TimeCurrent();
+   
+   if(lastEmaDrawTime != currentTime)
+   {
+      DrawEMALine();
+      lastEmaDrawTime = currentTime;
+   }
    
    if(Use_Trend_Filter)
    {
@@ -205,6 +212,8 @@ bool UpdateIndicators()
          Print("Failed to copy trend filter values");
          return false;
       }
+      
+      // We're not drawing trend filter EMAs - only using them for calculations
    }
    
    return true;
@@ -432,17 +441,18 @@ bool IsStrategyOnCooldown()
 int CountSwingPoints(int lookback, bool isBullish)
 {
    // Use the crossover bar as the starting point for swing detection
-   // If g_crossoverBar is not set, use the provided lookback
    int barsToCheck = (g_crossoverBar > 0) ? g_crossoverBar + 5 : lookback;
    
    if(barsToCheck < 3) barsToCheck = 3; // Need at least 3 bars to detect a swing
    
    Print("Checking for swing points from crossover bar ", g_crossoverBar, " using ", barsToCheck, " bars");
    
-   double highs[], lows[];
+   double highs[], lows[], emaValues[];
    ArraySetAsSeries(highs, true);
    ArraySetAsSeries(lows, true);
+   ArraySetAsSeries(emaValues, true);
    
+   // Copy price data and EMA values
    if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, barsToCheck, highs) != barsToCheck ||
       CopyLow(_Symbol, PERIOD_CURRENT, 0, barsToCheck, lows) != barsToCheck)
    {
@@ -450,58 +460,106 @@ int CountSwingPoints(int lookback, bool isBullish)
       return 999; // Return a high number to prevent trade
    }
    
+   // Make sure we have enough EMA values
+   if(ArraySize(g_ema.values) < barsToCheck)
+   {
+      if(!UpdateEMAValues(barsToCheck))
+      {
+         Print("Failed to update EMA values for swing detection");
+         return 999; // Return a high number to prevent trade
+      }
+   }
+   
+   // Copy EMA values to local array for easier access
+   ArrayResize(emaValues, barsToCheck);
+   for(int i = 0; i < barsToCheck && i < ArraySize(g_ema.values); i++)
+   {
+      emaValues[i] = g_ema.values[i];
+   }
+   
    // Clear any existing swing point markers
    ObjectsDeleteAll(0, "SwingPoint_");
    
-   int swingCount = 0;
+   int validSwingCount = 0;
    
-   if(isBullish)
+   // Mark and count swing lows (local minima) since the EMA crossover
+   for(int i = 1; i < barsToCheck - 1; i++)
    {
-      // Count swing lows (local minima) since the EMA crossover
-      for(int i = 1; i < barsToCheck - 1; i++)
+      // Check if this is a swing low (lower than both neighbors)
+      if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
       {
-         if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
+         // Check if the swing low is below the EMA
+         bool isBelowEMA = (lows[i] < emaValues[i]);
+         
+         // Mark the swing low on the chart
+         string objName = "SwingPoint_Low_" + IntegerToString(i);
+         datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+         
+         // Use different colors based on position relative to EMA
+         color swingColor = isBelowEMA ? clrRed : clrOrange;
+         
+         ObjectCreate(0, objName, OBJ_ARROW_DOWN, 0, time, lows[i]);
+         ObjectSetInteger(0, objName, OBJPROP_COLOR, swingColor);
+         ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+         
+         // Only count swing lows below the EMA as valid swing points for bullish setups
+         if(isBullish && isBelowEMA)
          {
-            swingCount++;
-            
-            // Mark the swing low on the chart
-            string objName = "SwingPoint_Low_" + IntegerToString(i);
-            datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
-            
-            ObjectCreate(0, objName, OBJ_ARROW_DOWN, 0, time, lows[i]);
-            ObjectSetInteger(0, objName, OBJPROP_COLOR, clrRed);
-            ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
-            ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-            
-            Print("Bullish swing low detected at bar ", i, ", price: ", lows[i]);
+            validSwingCount++;
+            Print("Valid bullish swing low detected at bar ", i, ", price: ", lows[i], " (below EMA: ", emaValues[i], ")");
          }
-      }
-   }
-   else
-   {
-      // Count swing highs (local maxima) since the EMA crossover
-      for(int i = 1; i < barsToCheck - 1; i++)
-      {
-         if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
+         else if(isBullish)
          {
-            swingCount++;
-            
-            // Mark the swing high on the chart
-            string objName = "SwingPoint_High_" + IntegerToString(i);
-            datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
-            
-            ObjectCreate(0, objName, OBJ_ARROW_UP, 0, time, highs[i]);
-            ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlue);
-            ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
-            ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
-            
-            Print("Bearish swing high detected at bar ", i, ", price: ", highs[i]);
+            Print("Ignored bullish swing low at bar ", i, ", price: ", lows[i], " (above EMA: ", emaValues[i], ")");
+         }
+         else
+         {
+            Print("Marked bearish swing low at bar ", i, ", price: ", lows[i], " (not counted for bearish setup)");
          }
       }
    }
    
-   Print("Total swing points detected since crossover: ", swingCount);
-   return swingCount;
+   // Mark and count swing highs (local maxima) since the EMA crossover
+   for(int i = 1; i < barsToCheck - 1; i++)
+   {
+      // Check if this is a swing high (higher than both neighbors)
+      if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
+      {
+         // Check if the swing high is above the EMA
+         bool isAboveEMA = (highs[i] > emaValues[i]);
+         
+         // Mark the swing high on the chart
+         string objName = "SwingPoint_High_" + IntegerToString(i);
+         datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+         
+         // Use different colors based on position relative to EMA
+         color swingColor = isAboveEMA ? clrBlue : clrAqua;
+         
+         ObjectCreate(0, objName, OBJ_ARROW_UP, 0, time, highs[i]);
+         ObjectSetInteger(0, objName, OBJPROP_COLOR, swingColor);
+         ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+         
+         // Only count swing highs above the EMA as valid swing points for bearish setups
+         if(!isBullish && isAboveEMA)
+         {
+            validSwingCount++;
+            Print("Valid bearish swing high detected at bar ", i, ", price: ", highs[i], " (above EMA: ", emaValues[i], ")");
+         }
+         else if(!isBullish)
+         {
+            Print("Ignored bearish swing high at bar ", i, ", price: ", highs[i], " (below EMA: ", emaValues[i], ")");
+         }
+         else
+         {
+            Print("Marked bullish swing high at bar ", i, ", price: ", highs[i], " (not counted for bullish setup)");
+         }
+      }
+   }
+   
+   Print("Total valid swing points detected since crossover: ", validSwingCount);
+   return validSwingCount;
 }
 
 //+------------------------------------------------------------------+

@@ -109,11 +109,7 @@ bool UpdateEMAValues(int requiredBars)
 //+------------------------------------------------------------------+
 bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookbackCandles = 10)
 {
-    if (g_ema.handle == INVALID_HANDLE && useTrendFilter)
-    {
-        Print("IsEngulfing: Invalid EMA handle for trend filter");
-        return false;
-    }
+   
 
     // Validate lookback parameter
     lookbackCandles = MathMax(1, lookbackCandles); // Ensure at least 1 candle is checked
@@ -121,11 +117,7 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookba
     int maxIdx = shift + lookbackCandles;
     int bars = Bars(_Symbol, PERIOD_CURRENT);
 
-    if (maxIdx >= bars)
-    {
-        Print("IsEngulfing: Not enough bars available. Required: ", maxIdx + 1, ", Available: ", bars);
-        return false;
-    }
+    
 
     // Current candle data
     double open1 = iOpen(_Symbol, PERIOD_CURRENT, shift);
@@ -133,8 +125,7 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookba
     double high1 = iHigh(_Symbol, PERIOD_CURRENT, shift);
     double low1 = iLow(_Symbol, PERIOD_CURRENT, shift);
 
-    PrintFormat("IsEngulfing: Checking candle at shift %d: Open=%.5f, Close=%.5f, High=%.5f, Low=%.5f", 
-                shift, open1, close1, high1, low1);
+  
 
     // Determine current candle direction
     bool currentIsBullish = (close1 > open1);
@@ -149,24 +140,28 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookba
 
     if (useTrendFilter)
     {
-        // Make sure we have enough EMA values
+        // Check if we have enough EMA values
         if (ArraySize(g_ema.values) <= shift + 1)
         {
-            Print("IsEngulfing: Not enough EMA values for trend filter");
-            return false;
+            // Instead of failing, we'll disable the trend filter for this check
+            Print("IsEngulfing: Not enough EMA values for trend filter, continuing without trend filter");
+            trendOkBull = true;
+            trendOkBear = true;
         }
-        
-        double maValue = g_ema.values[shift];
-        double maPrior = g_ema.values[shift + 1];
-        
-        // For bullish pattern, price should be above EMA or EMA should be rising
-        trendOkBull = (close1 > maValue) || (maValue > maPrior);
-        
-        // For bearish pattern, price should be below EMA or EMA should be falling
-        trendOkBear = (close1 < maValue) || (maValue < maPrior);
-        
-        PrintFormat("IsEngulfing: Trend filter - EMA(current)=%.5f, EMA(prior)=%.5f, Bull OK=%s, Bear OK=%s", 
-                   maValue, maPrior, trendOkBull ? "Yes" : "No", trendOkBear ? "Yes" : "No");
+        else
+        {
+            double maValue = g_ema.values[shift];
+            double maPrior = g_ema.values[shift + 1];
+            
+            // For bullish pattern, price should be above EMA or EMA should be rising
+            trendOkBull = (close1 > maValue) || (maValue > maPrior);
+            
+            // For bearish pattern, price should be below EMA or EMA should be falling
+            trendOkBear = (close1 < maValue) || (maValue < maPrior);
+            
+            PrintFormat("IsEngulfing: Trend filter - EMA(current)=%.5f, EMA(prior)=%.5f, Bull OK=%s, Bear OK=%s", 
+                       maValue, maPrior, trendOkBull ? "Yes" : "No", trendOkBear ? "Yes" : "No");
+        }
     }
 
     // Calculate average candle sizes from previous candles
