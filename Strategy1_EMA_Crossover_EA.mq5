@@ -92,6 +92,9 @@ int OnInit()
    Print("Total available bars: ", barCount);
    g_crossoverBar = -1;
    
+   // Clear any existing swing point markers
+   ObjectsDeleteAll(0, "SwingPoint_");
+   
    // Initialize trend filter indicators
    if(Use_Trend_Filter)
    {
@@ -146,6 +149,7 @@ void OnDeinit(const int reason)
    
    // Clean up any pattern markers when EA is removed
    ObjectsDeleteAll(0, "EngulfPattern_");
+   ObjectsDeleteAll(0, "SwingPoint_");
       
    if(Use_Trend_Filter)
    {
@@ -245,70 +249,78 @@ void CheckStrategy()
    // If we have a valid crossover (either stored or new), check for engulfing pattern
    if(g_crossoverBar >= 0)
    {
-      // Check for engulfing pattern on the current completed bar (bar 1)
+      // Check for engulfing pattern on any bar after crossover
       if(g_lastEmaCrossAbove)
       {
-         // Check for bullish engulfing
-         if(IsEngulfing(1, true, Use_Trend_Filter))
+         // Check for bullish engulfing on the current completed bar
+         for(int i = 1; i <= g_crossoverBar; i++)  // Check all bars up to the crossover bar
          {
-            // Check for no more than one swing low
-            if(CountSwingPoints(5, true) <= 1)
+            if(IsEngulfing(i, true, Use_Trend_Filter))
             {
-               if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH) 
+               // Check for no more than one swing low
+               if(CountSwingPoints(5, true) <= 1)
                {
-                  Print("Trend filter rejected bullish trade");
+                  if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH) 
+                  {
+                     Print("Trend filter rejected bullish trade");
+                     return;
+                  }
+                  
+                  double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
+                  // Find swing low for better stop loss placement
+                  double swingLow = FindSwingLowBeforeCross(g_crossoverBar, 10);
+                  double stopLoss = swingLow > 0 ? swingLow - (10 * _Point) : iLow(_Symbol, PERIOD_CURRENT, i) - (10 * _Point);
+                  double takeProfit = close1 + ((close1 - stopLoss) * 1.5);
+                  
+                  Print("Bullish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
+                  ExecuteTrade(true, stopLoss, takeProfit);
+                  
+                  // Reset crossover after trade execution
+                  g_crossoverBar = -1;
+                  g_lastEmaCrossPrice = 0.0;
                   return;
                }
-               
-               double close1 = iClose(_Symbol, PERIOD_CURRENT, 1);
-               // Find swing low for better stop loss placement
-               double swingLow = FindSwingLowBeforeCross(g_crossoverBar, 10);
-               double stopLoss = swingLow > 0 ? swingLow - (10 * _Point) : iLow(_Symbol, PERIOD_CURRENT, 1) - (10 * _Point);
-               double takeProfit = close1 + ((close1 - stopLoss) * 1.5);
-               
-               ExecuteTrade(true, stopLoss, takeProfit);
-               
-               // Reset crossover after trade execution
-               g_crossoverBar = -1;
-               g_lastEmaCrossPrice = 0.0;
-               return;
-            }
-            else
-            {
-               Print("Too many swing points for bullish trade");
+               else
+               {
+                  Print("Too many swing points for bullish trade");
+               }
             }
          }
       }
       else // Bearish crossover
       {
-         // Check for bearish engulfing
-         if(IsEngulfing(1, false, Use_Trend_Filter))
+         // Check for bearish engulfing on the current completed bar
+         for(int i = 1; i <= g_crossoverBar; i++)  // Check all bars up to the crossover bar
          {
-            // Check for no more than one swing high
-            if(CountSwingPoints(5, false) <= 1)
+            if(IsEngulfing(i, false, Use_Trend_Filter))
             {
-               if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
+               // Check for no more than one swing high
+               if(CountSwingPoints(5, false) <= 1)
                {
-                  Print("Trend filter rejected bearish trade");
+                  if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
+                  {
+                     Print("Trend filter rejected bearish trade");
+                     return;
+                  }
+                  
+                  double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
+                  // Find swing high for better stop loss placement
+                  double swingHigh = FindSwingHighBeforeCross(g_crossoverBar, 10);
+                  double stopLoss = swingHigh > 0 ? swingHigh + (10 * _Point) : iHigh(_Symbol, PERIOD_CURRENT, i) + (10 * _Point);
+                  double takeProfit = close1 - ((stopLoss - close1) * 1.5);
+                  
+                  Print("Bearish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
+                  ExecuteTrade(false, stopLoss, takeProfit);
+                  
+                  // Reset crossover after trade execution
+                  g_crossoverBar = -1;
+                  g_lastEmaCrossPrice = 0.0;
                   return;
                }
-               
-               double close1 = iClose(_Symbol, PERIOD_CURRENT, 1);
-               // Find swing high for better stop loss placement
-               double swingHigh = FindSwingHighBeforeCross(g_crossoverBar, 10);
-               double stopLoss = swingHigh > 0 ? swingHigh + (10 * _Point) : iHigh(_Symbol, PERIOD_CURRENT, 1) + (10 * _Point);
-               double takeProfit = close1 - ((stopLoss - close1) * 1.5);
-               
-               ExecuteTrade(false, stopLoss, takeProfit);
-               
-               // Reset crossover after trade execution
-               g_crossoverBar = -1;
-               g_lastEmaCrossPrice = 0.0;
-               return;
-            }
-            else
-            {
-               Print("Too many swing points for bearish trade");
+               else
+               {
+                  Print("Too many swing points for bearish trade");
+               }
             }
          }
       }
@@ -317,12 +329,8 @@ void CheckStrategy()
       // Increment the bar counter to track how many bars since crossover
       g_crossoverBar++;
       
-      // If it's been too many bars since the crossover, reset it
-      if(g_crossoverBar > 5) {
-         g_crossoverBar = -1;
-         g_lastEmaCrossPrice = 0.0;
-         Print("Resetting crossover - no valid setup found within 5 bars");
-      }
+      // No limit on how many bars to check after crossover
+      // The crossover will remain valid until a trade is executed or the EA is stopped
    }
 }
 
@@ -419,51 +427,80 @@ bool IsStrategyOnCooldown()
 }
 
 //+------------------------------------------------------------------+
-//| Count swing points in recent bars                                 |
+//| Count swing points since EMA crossover                            |
 //+------------------------------------------------------------------+
 int CountSwingPoints(int lookback, bool isBullish)
 {
-   if(lookback < 3) lookback = 3; // Need at least 3 bars to detect a swing
+   // Use the crossover bar as the starting point for swing detection
+   // If g_crossoverBar is not set, use the provided lookback
+   int barsToCheck = (g_crossoverBar > 0) ? g_crossoverBar + 5 : lookback;
+   
+   if(barsToCheck < 3) barsToCheck = 3; // Need at least 3 bars to detect a swing
+   
+   Print("Checking for swing points from crossover bar ", g_crossoverBar, " using ", barsToCheck, " bars");
    
    double highs[], lows[];
    ArraySetAsSeries(highs, true);
    ArraySetAsSeries(lows, true);
    
-   if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, lookback, highs) != lookback ||
-      CopyLow(_Symbol, PERIOD_CURRENT, 0, lookback, lows) != lookback)
+   if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, barsToCheck, highs) != barsToCheck ||
+      CopyLow(_Symbol, PERIOD_CURRENT, 0, barsToCheck, lows) != barsToCheck)
    {
       Print("Failed to copy price data for swing detection");
       return 999; // Return a high number to prevent trade
    }
    
+   // Clear any existing swing point markers
+   ObjectsDeleteAll(0, "SwingPoint_");
+   
    int swingCount = 0;
    
    if(isBullish)
    {
-      // Count swing lows (local minima)
-      for(int i = 1; i < lookback - 1; i++)
+      // Count swing lows (local minima) since the EMA crossover
+      for(int i = 1; i < barsToCheck - 1; i++)
       {
          if(lows[i] < lows[i-1] && lows[i] < lows[i+1])
          {
             swingCount++;
-            Print("Bullish swing low detected at bar ", i);
+            
+            // Mark the swing low on the chart
+            string objName = "SwingPoint_Low_" + IntegerToString(i);
+            datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+            
+            ObjectCreate(0, objName, OBJ_ARROW_DOWN, 0, time, lows[i]);
+            ObjectSetInteger(0, objName, OBJPROP_COLOR, clrRed);
+            ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+            
+            Print("Bullish swing low detected at bar ", i, ", price: ", lows[i]);
          }
       }
    }
    else
    {
-      // Count swing highs (local maxima)
-      for(int i = 1; i < lookback - 1; i++)
+      // Count swing highs (local maxima) since the EMA crossover
+      for(int i = 1; i < barsToCheck - 1; i++)
       {
          if(highs[i] > highs[i-1] && highs[i] > highs[i+1])
          {
             swingCount++;
-            Print("Bearish swing high detected at bar ", i);
+            
+            // Mark the swing high on the chart
+            string objName = "SwingPoint_High_" + IntegerToString(i);
+            datetime time = iTime(_Symbol, PERIOD_CURRENT, i);
+            
+            ObjectCreate(0, objName, OBJ_ARROW_UP, 0, time, highs[i]);
+            ObjectSetInteger(0, objName, OBJPROP_COLOR, clrBlue);
+            ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+            
+            Print("Bearish swing high detected at bar ", i, ", price: ", highs[i]);
          }
       }
    }
    
-   Print("Total swing points detected: ", swingCount);
+   Print("Total swing points detected since crossover: ", swingCount);
    return swingCount;
 }
 
