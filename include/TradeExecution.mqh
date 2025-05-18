@@ -1,6 +1,21 @@
 //+------------------------------------------------------------------+
-//| Execute trade                                                     |
+//|                                           TradeExecution.mqh      |
+//|                                                                   |
+//|                                                                   |
 //+------------------------------------------------------------------+
+
+#property copyright "Copyright 2023"
+#property link      ""
+#property strict
+
+// Strategy-specific Magic Number
+#define MAGIC_NUMBER 111111
+
+//+------------------------------------------------------------------+
+//| Execute trade                                                     |
+//+-----------------------------------------------------------------+
+
+
 void ExecuteTrade(bool isBuy, double stopLoss, double takeProfit)
 {
    // Check if we already have an open position with our magic number
