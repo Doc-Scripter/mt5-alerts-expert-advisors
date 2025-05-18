@@ -14,8 +14,7 @@
 #include "include/RiskManagement.mqh"
 
 
-// Strategy-specific Magic Number
-#define MAGIC_NUMBER 111111
+
 
 
 // Lot Sizing Modes
@@ -284,12 +283,12 @@ void CheckStrategy()
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
-                  // Find swing low for better stop loss placement
-                  double swingLow = FindSwingLowBeforeCross(g_crossoverBar, 10);
-                  double stopLoss = swingLow > 0 ? swingLow - (10 * _Point) : iLow(_Symbol, PERIOD_CURRENT, i) - (10 * _Point);
+                  // Place stop loss at the lowest point of the engulfing candle
+                  double stopLoss = iLow(_Symbol, PERIOD_CURRENT, i);
                   double takeProfit = close1 + ((close1 - stopLoss) * 1.5);
                   
                   Print("Bullish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
+                  Print("Stop loss placed at the lowest point of engulfing candle: ", stopLoss);
                   ExecuteTrade(true, stopLoss, takeProfit);
                   
                   // Reset crossover after trade execution
@@ -321,12 +320,12 @@ void CheckStrategy()
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
-                  // Find swing high for better stop loss placement
-                  double swingHigh = FindSwingHighBeforeCross(g_crossoverBar, 10);
-                  double stopLoss = swingHigh > 0 ? swingHigh + (10 * _Point) : iHigh(_Symbol, PERIOD_CURRENT, i) + (10 * _Point);
+                  // Place stop loss at the highest point of the engulfing candle
+                  double stopLoss = iHigh(_Symbol, PERIOD_CURRENT, i);
                   double takeProfit = close1 - ((stopLoss - close1) * 1.5);
                   
                   Print("Bearish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
+                  Print("Stop loss placed at the highest point of engulfing candle: ", stopLoss);
                   ExecuteTrade(false, stopLoss, takeProfit);
                   
                   // Reset crossover after trade execution
