@@ -276,19 +276,45 @@ void CheckStrategy()
                // Check for no more than one swing low
                if(CountSwingPoints(5, true) <= 1)
                {
-                  if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH) 
+                  if(Use_Trend_Filter)
                   {
-                     Print("Trend filter detected non-bullish trend, but executing trade anyway");
-                     // Continue with trade execution instead of returning
+                     int trendState = GetTrendState();
+                     if(trendState != TREND_BULLISH)
+                     {
+                        Print("Trend filter detected non-bullish trend - skipping trade");
+                        return;
+                     }
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
                   // Place stop loss at the lowest point of the engulfing candle
                   double stopLoss = iLow(_Symbol, PERIOD_CURRENT, i);
-                  double takeProfit = close1 + ((close1 - stopLoss) * 1.5);
+                  
+                  // Find the recent swing low before the engulfing pattern for Fibonacci calculation
+                  double swingLow = FindSwingLowBeforeCross(g_crossoverBar, 10);
+                  double swingHigh = iHigh(_Symbol, PERIOD_CURRENT, i); // Use engulfing candle high
+                  
+                  // If we couldn't find a valid swing low, use the engulfing candle's low
+                  if(swingLow <= 0) swingLow = stopLoss;
+                  
+                  // Calculate Fibonacci extension (161.8%)
+                  double fibExtension = swingHigh + (swingHigh - swingLow) * 1.618;
+                  double takeProfit = fibExtension;
+                  
+                  // Fallback to 1:1.5 risk-reward if Fibonacci calculation fails
+                  if(takeProfit <= close1 || MathAbs(takeProfit - close1) < 10 * _Point)
+                  {
+                     takeProfit = close1 + ((close1 - stopLoss) * 1.5);
+                     Print("Using fallback 1:1.5 risk-reward ratio for take profit");
+                  }
+                  else
+                  {
+                     Print("Using Fibonacci 161.8% extension for take profit");
+                  }
                   
                   Print("Bullish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
                   Print("Stop loss placed at the lowest point of engulfing candle: ", stopLoss);
+                  Print("Take profit placed at Fibonacci 161.8% extension: ", takeProfit);
                   ExecuteTrade(true, stopLoss, takeProfit);
                   
                   // Reset crossover after trade execution
@@ -313,19 +339,45 @@ void CheckStrategy()
                // Check for no more than one swing high
                if(CountSwingPoints(5, false) <= 1)
                {
-                  if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
+                  if(Use_Trend_Filter)
                   {
-                     Print("Trend filter detected non-bearish trend, but executing trade anyway");
-                     // Continue with trade execution instead of returning
+                     int trendState = GetTrendState();
+                     if(trendState != TREND_BEARISH)
+                     {
+                        Print("Trend filter detected non-bearish trend - skipping trade");
+                        return;
+                     }
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
                   // Place stop loss at the highest point of the engulfing candle
                   double stopLoss = iHigh(_Symbol, PERIOD_CURRENT, i);
-                  double takeProfit = close1 - ((stopLoss - close1) * 1.5);
+                  
+                  // Find the recent swing high before the engulfing pattern for Fibonacci calculation
+                  double swingHigh = FindSwingHighBeforeCross(g_crossoverBar, 10);
+                  double swingLow = iLow(_Symbol, PERIOD_CURRENT, i); // Use engulfing candle low
+                  
+                  // If we couldn't find a valid swing high, use the engulfing candle's high
+                  if(swingHigh <= 0) swingHigh = stopLoss;
+                  
+                  // Calculate Fibonacci extension (161.8%)
+                  double fibExtension = swingLow - (swingHigh - swingLow) * 1.618;
+                  double takeProfit = fibExtension;
+                  
+                  // Fallback to 1:1.5 risk-reward if Fibonacci calculation fails
+                  if(takeProfit >= close1 || MathAbs(takeProfit - close1) < 10 * _Point)
+                  {
+                     takeProfit = close1 - ((stopLoss - close1) * 1.5);
+                     Print("Using fallback 1:1.5 risk-reward ratio for take profit");
+                  }
+                  else
+                  {
+                     Print("Using Fibonacci 161.8% extension for take profit");
+                  }
                   
                   Print("Bearish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
                   Print("Stop loss placed at the highest point of engulfing candle: ", stopLoss);
+                  Print("Take profit placed at Fibonacci 161.8% extension: ", takeProfit);
                   ExecuteTrade(false, stopLoss, takeProfit);
                   
                   // Reset crossover after trade execution

@@ -52,8 +52,7 @@ int GetTrendState()
    }
    
    // If we reach here, we're in a ranging market or weak trend
-   // Instead of blocking trades, we'll return TREND_RANGING
-   // This allows both buy and sell trades if other conditions are met
-   Print("INFO: Market is ranging or has weak trend (ADX: ", adxValue, ")");
+   // Instead of allowing trades in ranging markets, we'll block them
+   Print("INFO: Market is ranging or has weak trend (ADX: ", adxValue, ") - No trading allowed");
    return TREND_RANGING;
 }
