@@ -278,8 +278,8 @@ void CheckStrategy()
                {
                   if(Use_Trend_Filter && GetTrendState() != TREND_BULLISH) 
                   {
-                     Print("Trend filter rejected bullish trade");
-                     return;
+                     Print("Trend filter detected non-bullish trend, but executing trade anyway");
+                     // Continue with trade execution instead of returning
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
@@ -315,8 +315,8 @@ void CheckStrategy()
                {
                   if(Use_Trend_Filter && GetTrendState() != TREND_BEARISH)
                   {
-                     Print("Trend filter rejected bearish trade");
-                     return;
+                     Print("Trend filter detected non-bearish trend, but executing trade anyway");
+                     // Continue with trade execution instead of returning
                   }
                   
                   double close1 = iClose(_Symbol, PERIOD_CURRENT, i);
