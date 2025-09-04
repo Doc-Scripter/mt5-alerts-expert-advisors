@@ -7,6 +7,9 @@
 #property link      ""
 #property version   "1.00"
 
+// Include AlertSystem for sending alerts
+#include "../strategies/Strategy1_EMA_Crossover_EA/AlertSystem.mqh"
+
 // Common Constants
 #define EMA_PERIOD 20
 
@@ -213,6 +216,46 @@ bool IsEngulfing(int shift, bool bullish, bool useTrendFilter = true, int lookba
         {
             Print("SIGNAL: ", (bullish ? "Bullish" : "Bearish"), " engulfing pattern detected at bar ", shift);
             DrawEngulfingPattern(shift, bullish);
+            
+            // Send alert for all engulfing candles
+            if(shift == 1) // Only alert for the most recent completed candle - alerts always enabled
+            {
+                // Calculate stop loss and take profit levels for the alert
+                double stopLoss = bullish ? iLow(_Symbol, PERIOD_CURRENT, shift) : iHigh(_Symbol, PERIOD_CURRENT, shift);
+                double takeProfit = bullish ? close1 + ((close1 - stopLoss) * 1.5) : close1 - ((stopLoss - close1) * 1.5);
+                
+                // Create a simple alert message for engulfing patterns
+                string direction = bullish ? "BULLISH" : "BEARISH";
+                string alertMessage = StringFormat("%s ENGULFING PATTERN - %s", direction, _Symbol);
+                
+                // Always show chart alert
+                Alert(alertMessage);
+                
+                // Always play sound alert
+                PlaySound(Alert_Sound_File);
+                
+                // Send push notification to mobile
+                if(Send_Push_Notifications)
+                {
+                    string pushMessage = StringFormat("%s Engulfing Pattern - %s", direction, _Symbol);
+                    SendNotification(pushMessage);
+                    Print("Push notification sent: ", pushMessage);
+                }
+                
+                // Send email alert
+                if(Send_Email_Alerts)
+                {
+                    string emailSubject = StringFormat("Engulfing Pattern Alert: %s %s", direction, _Symbol);
+                    SendMail(emailSubject, alertMessage);
+                    Print("Email alert sent: ", emailSubject);
+                }
+                
+                // Print to experts log
+                Print("=== ENGULFING PATTERN ALERT ===");
+                Print(alertMessage);
+                Print("====================");
+            }
+            
             return true;
         }
     }

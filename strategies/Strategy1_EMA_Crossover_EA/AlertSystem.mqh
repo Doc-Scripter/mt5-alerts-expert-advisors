@@ -23,7 +23,6 @@ bool IsAlertCooldownPassed(bool isBullish)
 //+------------------------------------------------------------------+
 void SendTradingAlert(bool isBullish, double entryPrice, double stopLoss, double takeProfit, int barIndex)
 {
-   if(!Enable_Alerts) return;
    
    // Check cooldown
    if(!IsAlertCooldownPassed(isBullish)) return;
@@ -85,7 +84,7 @@ void SendTradingAlert(bool isBullish, double entryPrice, double stopLoss, double
    // Show chart alert
    if(Show_Chart_Alert)
    {
-      Alert(alertMessage);
+   Alert(alertMessage);
    }
    
    // Print to experts log
