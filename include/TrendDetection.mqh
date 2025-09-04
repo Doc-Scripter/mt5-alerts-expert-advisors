@@ -72,7 +72,14 @@ double GetVolatilityADXThreshold()
 bool IsEarlyTrendForming(bool isBullish)
 {
    // Copy more data for trend formation analysis
-   double fastEMA[3], mediumEMA[3], slowEMA[3], adx[3], plusDI[3], minusDI[3];
+   double fastEMA[], mediumEMA[], slowEMA[], adx[], plusDI[], minusDI[];
+   
+   ArrayResize(fastEMA, 3);
+   ArrayResize(mediumEMA, 3);
+   ArrayResize(slowEMA, 3);
+   ArrayResize(adx, 3);
+   ArrayResize(plusDI, 3);
+   ArrayResize(minusDI, 3);
    
    ArraySetAsSeries(fastEMA, true);
    ArraySetAsSeries(mediumEMA, true);
@@ -125,7 +132,14 @@ bool IsEarlyTrendForming(bool isBullish)
 bool IsTrendExhausting(bool isBullish)
 {
    // Copy more data for trend exhaustion analysis
-   double fastEMA[5], mediumEMA[5], slowEMA[5], adx[5], plusDI[5], minusDI[5];
+   double fastEMA[], mediumEMA[], slowEMA[], adx[], plusDI[], minusDI[];
+   
+   ArrayResize(fastEMA, 5);
+   ArrayResize(mediumEMA, 5);
+   ArrayResize(slowEMA, 5);
+   ArrayResize(adx, 5);
+   ArrayResize(plusDI, 5);
+   ArrayResize(minusDI, 5);
    
    ArraySetAsSeries(fastEMA, true);
    ArraySetAsSeries(mediumEMA, true);
