@@ -4,6 +4,9 @@
 //|                      Strategy Logic Functions for Strategy1       |
 //+------------------------------------------------------------------+
 
+// Constants
+#define STRATEGY_COOLDOWN_MINUTES 60
+
 //+------------------------------------------------------------------+
 //| Check strategy conditions                                         |
 //+------------------------------------------------------------------+
@@ -93,11 +96,14 @@ void CheckStrategy()
                   Print("Bullish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
                   Print("Stop loss placed at the lowest point of engulfing candle: ", stopLoss);
                   Print("Take profit placed at Fibonacci 161.8% extension: ", takeProfit);
-                  ExecuteTrade(true, stopLoss, takeProfit);
                   
-                  // Reset crossover after trade execution
+                  // Send alert instead of executing trade
+                  SendTradingAlert(true, close1, stopLoss, takeProfit, i);
+                  
+                  // Reset crossover after alert sent
                   g_crossoverBar = -1;
                   g_lastEmaCrossPrice = 0.0;
+                  g_lastAlertTime = TimeCurrent();
                   return;
                }
                else
@@ -156,11 +162,14 @@ void CheckStrategy()
                   Print("Bearish engulfing found at bar ", i, " after crossover at bar ", g_crossoverBar);
                   Print("Stop loss placed at the highest point of engulfing candle: ", stopLoss);
                   Print("Take profit placed at Fibonacci 161.8% extension: ", takeProfit);
-                  ExecuteTrade(false, stopLoss, takeProfit);
                   
-                  // Reset crossover after trade execution
+                  // Send alert instead of executing trade
+                  SendTradingAlert(false, close1, stopLoss, takeProfit, i);
+                  
+                  // Reset crossover after alert sent
                   g_crossoverBar = -1;
                   g_lastEmaCrossPrice = 0.0;
+                  g_lastAlertTime = TimeCurrent();
                   return;
                }
                else
@@ -185,10 +194,10 @@ void CheckStrategy()
 //+------------------------------------------------------------------+
 bool IsStrategyOnCooldown()
 {
-   if(g_lastTradeTime == 0) return false;
+   if(g_lastAlertTime == 0) return false;
    
    datetime currentTime = TimeCurrent();
-   if(currentTime - g_lastTradeTime < STRATEGY_COOLDOWN_MINUTES * 60)
+   if(currentTime - g_lastAlertTime < STRATEGY_COOLDOWN_MINUTES * 60)
       return true;
       
    return false;
